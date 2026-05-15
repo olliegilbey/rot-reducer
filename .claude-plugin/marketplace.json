@@ -14,7 +14,7 @@
         "repo": "olliegilbey/context-budget-monitor"
       },
       "description": "Injects graduated context-budget warnings into Claude's context during long autonomous sessions. Inspired by yurukusa/cc-safe-setup.",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "license": "MIT",
       "category": "monitoring",
       "tags": ["context", "monitoring", "hooks"]

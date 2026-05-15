@@ -32,14 +32,16 @@ This plugin keeps that design and swaps the output channel.
 
 | Level | Default trigger | Re-inject cadence | Action requested of the model |
 |-------|-----------------|-------------------|-------------------------------|
-| L1 caution    | 125k tokens | every 7 tool calls | Begin steering toward a clean checkpoint |
-| L2 wrap       | 135k tokens | every 5 tool calls | Finish current sub-task, recommend `/compact` with steering |
-| L3 hard stop  | 145k tokens | every 3 tool calls | Stop new work, fill evacuation template, recommend `/compact` |
-| L4 overdrive  | 155k tokens | every 2 tool calls | Past hard-stop boundary — end turn immediately |
+| L1 caution    | 125k tokens | transition only      | Heads-up only — finish current sub-task, do not break early |
+| L2 wrap       | 135k tokens | every 10 tool calls  | Wrap to a clean checkpoint, recommend `/compact` with steering |
+| L3 hard stop  | 145k tokens | every 6 tool calls   | Stop new work, fill evacuation template, recommend `/compact` |
+| L4 overdrive  | 155k tokens | every 3 tool calls   | Past hard-stop boundary — end turn immediately |
 
-Each level fires once on the upward transition, then re-injects at the
-listed cadence until the next level is crossed (or until context drops
-back below the threshold, e.g. after `/compact`).
+Each level fires once on the upward transition; L2/L3/L4 then re-inject
+at the listed cadence as a safety net (in case the first fire landed
+mid-burst) until the next level is crossed or context drops back below
+the threshold, e.g. after `/compact`. L1 is transition-only by design:
+re-firing a "heads-up only" message would contradict its own intent.
 
 At L3+, an **evacuation template** with `[TODO]` placeholders is
 appended to `MISSION.md` in the project root. A 30-minute cooldown plus
@@ -89,10 +91,10 @@ export CC_CONTEXT_L3_TOKENS=145000
 export CC_CONTEXT_L4_TOKENS=155000
 
 # Re-injection cadence (tool calls between nudges at each level)
-export CC_CONTEXT_L1_CADENCE=7
-export CC_CONTEXT_L2_CADENCE=5
-export CC_CONTEXT_L3_CADENCE=3
-export CC_CONTEXT_L4_CADENCE=2
+export CC_CONTEXT_L1_CADENCE=0   # 0 = transition only (no re-injection)
+export CC_CONTEXT_L2_CADENCE=10
+export CC_CONTEXT_L3_CADENCE=6
+export CC_CONTEXT_L4_CADENCE=3
 
 # Mission file path (where the evacuation template is appended)
 export CC_CONTEXT_MISSION_FILE="$PWD/MISSION.md"

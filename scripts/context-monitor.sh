@@ -28,10 +28,10 @@ L4_TOKENS="${CC_CONTEXT_L4_TOKENS:-155000}"   # overdrive (L3 ignored)
 
 # Re-injection cadence — tool calls between re-nudges at each level.
 # 0 disables periodic re-injection at that level (transition only).
-L1_CADENCE="${CC_CONTEXT_L1_CADENCE:-7}"
-L2_CADENCE="${CC_CONTEXT_L2_CADENCE:-5}"
-L3_CADENCE="${CC_CONTEXT_L3_CADENCE:-3}"
-L4_CADENCE="${CC_CONTEXT_L4_CADENCE:-2}"
+L1_CADENCE="${CC_CONTEXT_L1_CADENCE:-0}"
+L2_CADENCE="${CC_CONTEXT_L2_CADENCE:-10}"
+L3_CADENCE="${CC_CONTEXT_L3_CADENCE:-6}"
+L4_CADENCE="${CC_CONTEXT_L4_CADENCE:-3}"
 
 # Tool-count fallback: assumed tokens per tool call when transcript and
 # debug log are both unavailable. Crude but always available.

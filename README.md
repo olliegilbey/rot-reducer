@@ -1,87 +1,44 @@
 # context-budget-monitor
 
-A Claude Code plugin that injects graduated context-budget warnings **into
-Claude's own context** during long autonomous sessions, so the model wraps
-up cleanly before auto-compaction degrades the session.
+> A Claude Code plugin that warns Claude itself when its context window is filling up, so long autonomous sessions wrap work cleanly before auto-compaction kicks in.
 
-It runs as a `PostToolUse` hook, reads the session transcript to estimate
-how many tokens have been consumed, and emits an
-`hookSpecificOutput.additionalContext` message when configured thresholds
-are crossed. The model sees these messages next to the tool result and
-can act on them.
+## The problem
 
-## Why this, and not just a stderr warning
+Claude Code auto-compacts when its context window fills. Compaction summarises older turns, which keeps the session going but loses detail — architectural choices, in-flight reasoning, the *why* behind decisions. If Claude is mid-task when it triggers, it wakes up with half-finished work and a vague idea of where it left off.
 
-Inspired by [yurukusa/cc-safe-setup][yurukusa]'s `context-monitor` hook,
-which writes graduated warnings to stderr. That works for the human
-watching the terminal but the model never sees them — by the time you
-notice the warning, auto-compact may already be inevitable. This plugin
-uses the documented [`additionalContext`][addctx] hook output so the
-model itself reads the warning mid-turn and can wrap the current
-sub-task at a clean checkpoint, propose `/compact` with steering
-instructions, or stop and report status.
+This plugin nudges Claude *before* that happens. As context fills, it drops a short status note into Claude's next turn — *"you're at X% of the high-performance window, wrap to a clean checkpoint and consider `/compact`"* — so Claude can finish the current step, summarise state, and choose the right transition (`/compact` to continue, `/clear` to switch tasks).
 
-The threshold logic, debug-log parsing, tool-count fallback estimation,
-and evacuation template mechanism all originate with yurukusa's design.
-This plugin keeps that design and swaps the output channel.
+## How it works
 
-[yurukusa]: https://github.com/yurukusa/cc-safe-setup
-[addctx]: https://code.claude.com/docs/en/hooks
+A `PostToolUse` hook reads the session transcript after every tool call, estimates current token usage, and — at four escalating levels — injects an `additionalContext` message that Claude reads on the next turn.
 
-## What it does
+| Level | Trigger     | Re-inject       | What Claude is told to do |
+|-------|-------------|-----------------|---------------------------|
+| L1    | 125k tokens | once            | Heads-up only — keep going, don't break early |
+| L2    | 135k tokens | every 10 calls  | Wrap to a clean checkpoint, recommend `/compact` |
+| L3    | 145k tokens | every 6 calls   | Stop new work, fill an evacuation template, recommend `/compact` |
+| L4    | 155k tokens | every 3 calls   | End the turn now |
 
-| Level | Default trigger | Re-inject cadence | Action requested of the model |
-|-------|-----------------|-------------------|-------------------------------|
-| L1 caution    | 125k tokens | transition only      | Heads-up only — finish current sub-task, do not break early |
-| L2 wrap       | 135k tokens | every 10 tool calls  | Wrap to a clean checkpoint, recommend `/compact` with steering |
-| L3 hard stop  | 145k tokens | every 6 tool calls   | Stop new work, fill evacuation template, recommend `/compact` |
-| L4 overdrive  | 155k tokens | every 3 tool calls   | Past hard-stop boundary — end turn immediately |
+Messages are phrased as a percentage of the high-performance window (L4 = 100% baseline). Raw token counts aren't useful to the model — it has no native sense of its own ceiling — so the percentage gives a calibrated signal.
 
-Each level fires once on the upward transition; L2/L3/L4 then re-inject
-at the listed cadence as a safety net (in case the first fire landed
-mid-burst) until the next level is crossed or context drops back below
-the threshold, e.g. after `/compact`. L1 is transition-only by design:
-re-firing a "heads-up only" message would contradict its own intent.
+At L3 and above, an **evacuation template** with `[TODO]` fields is appended to `MISSION.md` in the project root, telling Claude exactly what to checkpoint (current task, files modified, next action) before `/compact`. A 30-minute cooldown plus a "skip if existing unfilled template" check prevents spam.
 
-At L3+, an **evacuation template** with `[TODO]` placeholders is
-appended to `MISSION.md` in the project root. A 30-minute cooldown plus
-a "skip if existing unfilled template" check prevents spam. The
-injected message tells the model where the template lives so it can
-fill it before `/compact`.
+Defaults target the standard 200k context window, where ~150k is the practical ceiling before quality degrades. The same configuration is sensible for 1M-context sessions — you stop wanting fresh nudges past ~150k regardless.
 
-The default thresholds target the 200k-class context window where ~150k
-is the practical ceiling before auto-compact bites. They are absolute
-token counts, not percentages, so the same configuration is sensible on
-1M-context sessions — you stop wanting fresh nudges past ~150k either
-way.
+## Install
 
-## Token source
+```text
+/plugin marketplace add olliegilbey/context-budget-monitor
+/plugin install context-budget-monitor@olliegilbey-plugins
+```
 
-The script tries three sources in order:
+Pick **user** scope when prompted so every Claude session gets it. `jq` must be installed (`brew install jq` on macOS).
 
-1. **Transcript JSONL** (primary): reads `transcript_path` from the
-   hook input, finds the most recent assistant turn's `message.usage`,
-   sums `input_tokens + cache_read_input_tokens +
-   cache_creation_input_tokens`. Compact-aware — when a
-   `compact_boundary` event is present in the tail window, only
-   `usage` entries after it are considered. If no post-boundary
-   `usage` entry exists yet (the few-second gap right after auto-
-   compact), falls back to `compactMetadata.postTokens`. Without
-   this, the model would receive a spurious "compact now" nudge
-   immediately after an auto-compact already happened.
-2. **Debug log** (yurukusa's path, kept for completeness): parses
-   `~/.claude/debug/*.txt` for `autocompact: tokens=N`. Only populated
-   under `claude --debug`.
-3. **Tool-call count estimate** (fallback): `count *
-   FALLBACK_TOKENS_PER_CALL` (default 800). Crude but always available.
-
-Each invocation records which source was used in
-`${CLAUDE_PLUGIN_DATA}/<session_id>/last_eval` for transparency.
+Update with `/plugin marketplace update olliegilbey-plugins` then `/reload-plugins`.
 
 ## Configuration
 
-All settings are environment variables read at hook invocation time.
-Override in your shell before launching `claude`:
+All settings are environment variables read at hook invocation time. Override in your shell before launching `claude`:
 
 ```bash
 # Thresholds (token counts)
@@ -90,8 +47,8 @@ export CC_CONTEXT_L2_TOKENS=135000
 export CC_CONTEXT_L3_TOKENS=145000
 export CC_CONTEXT_L4_TOKENS=155000
 
-# Re-injection cadence (tool calls between nudges at each level)
-export CC_CONTEXT_L1_CADENCE=0   # 0 = transition only (no re-injection)
+# Re-injection cadence (tool calls between nudges; 0 = transition only)
+export CC_CONTEXT_L1_CADENCE=0
 export CC_CONTEXT_L2_CADENCE=10
 export CC_CONTEXT_L3_CADENCE=6
 export CC_CONTEXT_L4_CADENCE=3
@@ -102,91 +59,29 @@ export CC_CONTEXT_MISSION_FILE="$PWD/MISSION.md"
 # Evacuation template cooldown (seconds)
 export CC_CONTEXT_EVAC_COOLDOWN_SEC=1800
 
-# Tool-count fallback estimate (only used when transcript and debug log are unavailable)
+# Tool-count fallback (used only when the transcript is unreadable)
 export CC_CONTEXT_FALLBACK_TOKENS_PER_CALL=800
 ```
 
-State files live under `${CLAUDE_PLUGIN_DATA}/<session_id>/`, namespaced
-by hook-input `session_id` so concurrent sessions don't trample each
-other and counters reset cleanly on a new session.
+## Token source
 
-## Installation
+Tried in order:
 
-`jq` must be installed (`brew install jq` on macOS).
+1. **Transcript JSONL** (primary). Sums the most recent assistant turn's `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`. Compact-aware: anchors on `compact_boundary` events and only counts post-boundary `usage` entries, falling back to `compactMetadata.postTokens` if no fresh turn has landed yet. This prevents spurious nudges in the few-second window right after auto-compact.
+2. **Debug log**. Parses `~/.claude/debug/*.txt` for `autocompact: tokens=N`. Only populated under `claude --debug`.
+3. **Tool-call count estimate**. `count × FALLBACK_TOKENS_PER_CALL`. Crude but always available.
 
-### One-shot test (session-scoped)
+Per-invocation source, token count, and current level are written to `${CLAUDE_PLUGIN_DATA}/<session_id>/last_eval`. State files are namespaced by `session_id` so concurrent sessions don't collide.
 
-```bash
-claude --plugin-dir /path/to/context-budget-monitor
-```
+## Verifying it works
 
-Only active for the launched session; the hook is unregistered when you
-exit.
-
-### Persistent install from a local clone
-
-This repo ships its own `.claude-plugin/marketplace.json` so the plugin
-directory doubles as a single-plugin marketplace. From inside any Claude
-Code session:
-
-```text
-/plugin marketplace add /path/to/context-budget-monitor
-/plugin install context-budget-monitor@olliegilbey-plugins
-/reload-plugins
-```
-
-The marketplace registration and the installed plugin both persist
-across sessions. Update with `/plugin marketplace update
-olliegilbey-plugins` after pulling new commits; uninstall with `/plugin
-uninstall context-budget-monitor@olliegilbey-plugins`.
-
-### Persistent install from GitHub (after publishing)
-
-Once pushed to a public repo:
-
-```text
-/plugin marketplace add <owner>/<repo>
-/plugin install context-budget-monitor@olliegilbey-plugins
-```
-
-## What to watch for in a real session
-
-- After ~100k tokens the model should start preferring subagents for
-  reads/searches.
-- After ~130k it should propose `/compact` at the next natural break,
-  with steering instructions that name the architectural decisions
-  worth preserving.
-- After ~150k a `MISSION.md` should appear (or get an appended block);
-  the model should stop new work and summarise state.
-- Run `cat ${CLAUDE_PLUGIN_DATA}/<session_id>/last_eval` in another
-  shell to confirm the source (transcript / debug / estimate), current
-  token count, and current level.
-- If `last_eval` shows `source=estimate`, the transcript path is
-  unreadable for some reason — check permissions on
-  `~/.config/claude/projects/.../*.jsonl`.
-
-## File layout
-
-```
-context-budget-monitor/
-├── .claude-plugin/
-│   └── plugin.json
-├── hooks/
-│   └── hooks.json
-├── scripts/
-│   └── context-monitor.sh
-├── docs/superpowers/plans/context-budget-monitor.md
-├── LICENSE
-└── README.md
-```
+- After any tool call: `cat $HOME/.claude/plugins/data/context-budget-monitor/<session_id>/last_eval`. If the file exists, the hook is firing.
+- `source=estimate` means the transcript wasn't readable — check permissions on `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`.
+- In a long session, you should see L1 fire once around ~125k, then L2/L3/L4 escalate as work continues. After `/compact`, the level resets.
 
 ## Credits
 
-The threshold structure, debug-log parsing approach, tool-count
-fallback heuristic, and evacuation template mechanism are all carried
-over from [yurukusa/cc-safe-setup][yurukusa]'s `context-monitor`. The
-contribution here is routing the warnings through the documented
-`additionalContext` hook output so the model itself reads them.
+Threshold structure, debug-log parsing, tool-count fallback, and evacuation template mechanism originate with [yurukusa/cc-safe-setup](https://github.com/yurukusa/cc-safe-setup)'s `context-monitor`. This plugin routes the warnings through the documented [`additionalContext`](https://code.claude.com/docs/en/hooks) hook output so the model reads them.
 
 ## License
 

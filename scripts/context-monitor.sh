@@ -37,6 +37,12 @@ L4_CADENCE="${CC_CONTEXT_L4_CADENCE:-3}"
 # debug log are both unavailable. Crude but always available.
 FALLBACK_TOKENS_PER_CALL="${CC_CONTEXT_FALLBACK_TOKENS_PER_CALL:-800}"
 
+# Include subagents in budget monitoring. Off by default — subagents
+# can't run `/compact` or `/clear`, so a nudge to them is meaningless
+# and the main agent ends up parroting the subagent's warning back.
+# Set to 1 to inject into subagent contexts anyway.
+INCLUDE_SUBAGENTS="${CC_CONTEXT_INCLUDE_SUBAGENTS:-0}"
+
 # Evacuation template (mission file) settings.
 MISSION_FILE="${CC_CONTEXT_MISSION_FILE:-${CLAUDE_PROJECT_DIR:-$PWD}/MISSION.md}"
 EVAC_COOLDOWN_SEC="${CC_CONTEXT_EVAC_COOLDOWN_SEC:-1800}"
@@ -60,12 +66,17 @@ INPUT="$(cat)"
 SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)"
 TRANSCRIPT_PATH="$(printf '%s' "$INPUT" | jq -r '.transcript_path // empty' 2>/dev/null)"
 
-# Skip subagent tool calls. Subagents have their own (smaller) transcript and
-# cannot run /compact or /clear, so any nudge we inject would be misleading.
-# Their transcripts live in a /subagents/ subdir of the project session dir.
-case "$TRANSCRIPT_PATH" in
-    */subagents/*) exit 0 ;;
-esac
+# Skip subagent tool calls unless explicitly opted-in. Canonical signal is
+# the documented `agent_id` field, which Claude Code populates only when the
+# hook fires inside a subagent. The `*/subagents/*` transcript path check is
+# kept as a belt-and-braces fallback for edge cases where agent_id isn't set.
+if [ "$INCLUDE_SUBAGENTS" != "1" ]; then
+    AGENT_ID="$(printf '%s' "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null)"
+    [ -n "$AGENT_ID" ] && exit 0
+    case "$TRANSCRIPT_PATH" in
+        */subagents/*) exit 0 ;;
+    esac
+fi
 
 # Without a session_id we can't safely namespace state. Bucket under "unknown".
 [ -n "$SESSION_ID" ] || SESSION_ID="unknown"

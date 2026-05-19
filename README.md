@@ -61,6 +61,11 @@ export CC_CONTEXT_EVAC_COOLDOWN_SEC=1800
 
 # Tool-count fallback (used only when the transcript is unreadable)
 export CC_CONTEXT_FALLBACK_TOKENS_PER_CALL=800
+
+# Include subagents in budget monitoring (default 0 = skip them).
+# Subagents can't run /compact or /clear, so nudging them is usually
+# pointless and the main agent ends up parroting their warning back.
+export CC_CONTEXT_INCLUDE_SUBAGENTS=0
 ```
 
 ## Token source

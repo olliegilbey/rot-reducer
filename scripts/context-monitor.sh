@@ -19,12 +19,34 @@ set -uo pipefail
 # ----------------------------------------------------------------------------
 # Configuration (override via environment)
 # ----------------------------------------------------------------------------
-# Token thresholds (absolute, model-agnostic). Designed for the 200k-class
-# windows where ~150k is the practical ceiling before auto-compact bites.
-L1_TOKENS="${CC_CONTEXT_L1_TOKENS:-125000}"   # caution
-L2_TOKENS="${CC_CONTEXT_L2_TOKENS:-135000}"   # wrap to checkpoint
-L3_TOKENS="${CC_CONTEXT_L3_TOKENS:-145000}"   # hard stop
-L4_TOKENS="${CC_CONTEXT_L4_TOKENS:-155000}"   # overdrive (L3 ignored)
+# Profile selects the threshold set for the active context window.
+#   auto  - 1m unless CLAUDE_CODE_DISABLE_1M_CONTEXT=1 (Claude Code sets that
+#           env var when the extended window is turned off). This is the only
+#           window signal a hook can read — the size itself is exposed nowhere.
+#   200k  - standard window; ~150k is the practical ceiling.
+#   1m    - extended window; executive function degrades from ~400k (well
+#           before retrieval does), so thresholds sit in the 400-500k band.
+PROFILE="$(printf '%s' "${CC_CONTEXT_PROFILE:-auto}" | tr '[:upper:]' '[:lower:]')"
+if [ "$PROFILE" = "auto" ]; then
+    if [ "${CLAUDE_CODE_DISABLE_1M_CONTEXT:-}" = "1" ]; then
+        PROFILE="200k"
+    else
+        PROFILE="1m"
+    fi
+fi
+
+# Per-profile threshold defaults. Individual CC_CONTEXT_L*_TOKENS env vars,
+# if set, override the profile default for that level.
+if [ "$PROFILE" = "1m" ]; then
+    L1_DEFAULT=400000; L2_DEFAULT=435000; L3_DEFAULT=465000; L4_DEFAULT=500000
+else
+    PROFILE="200k"   # normalize any unrecognized value to the safe default
+    L1_DEFAULT=125000; L2_DEFAULT=135000; L3_DEFAULT=145000; L4_DEFAULT=155000
+fi
+L1_TOKENS="${CC_CONTEXT_L1_TOKENS:-$L1_DEFAULT}"   # caution
+L2_TOKENS="${CC_CONTEXT_L2_TOKENS:-$L2_DEFAULT}"   # wrap to checkpoint
+L3_TOKENS="${CC_CONTEXT_L3_TOKENS:-$L3_DEFAULT}"   # hard stop
+L4_TOKENS="${CC_CONTEXT_L4_TOKENS:-$L4_DEFAULT}"   # overdrive (L3 ignored)
 
 # Re-injection cadence — tool calls between re-nudges at each level.
 # 0 disables periodic re-injection at that level (transition only).
@@ -222,8 +244,8 @@ echo "$LEVEL" >"$LEVEL_FILE"
 
 # Debug breadcrumb (not injected into Claude's context — operator-only).
 {
-    printf 'ts=%s count=%d tokens=%d source=%s level=%d last_level=%d inject=%d\n' \
-        "$(date '+%Y-%m-%dT%H:%M:%S')" "$COUNT" "$TOKENS" "$SOURCE" "$LEVEL" "$LAST_LEVEL" "$INJECT"
+    printf 'ts=%s count=%d tokens=%d source=%s profile=%s level=%d last_level=%d inject=%d\n' \
+        "$(date '+%Y-%m-%dT%H:%M:%S')" "$COUNT" "$TOKENS" "$SOURCE" "$PROFILE" "$LEVEL" "$LAST_LEVEL" "$INJECT"
 } >"$DEBUG_FILE" 2>/dev/null || true
 
 # ----------------------------------------------------------------------------

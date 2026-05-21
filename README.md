@@ -12,18 +12,27 @@ This plugin nudges Claude *before* that happens. As context fills, it drops a sh
 
 A `PostToolUse` hook reads the session transcript after every tool call, estimates current token usage, and — at four escalating levels — injects an `additionalContext` message that Claude reads on the next turn.
 
-| Level | Trigger     | Re-inject       | What Claude is told to do |
-|-------|-------------|-----------------|---------------------------|
-| L1    | 125k tokens | once            | Heads-up only — keep going, don't break early |
-| L2    | 135k tokens | every 10 calls  | Wrap to a clean checkpoint, recommend `/compact` |
-| L3    | 145k tokens | every 6 calls   | Stop new work, fill an evacuation template, recommend `/compact` |
-| L4    | 155k tokens | every 3 calls   | End the turn now |
+| Level | `200k` trigger | `1m` trigger | Re-inject       | What Claude is told to do |
+|-------|----------------|--------------|-----------------|---------------------------|
+| L1    | 125k tokens    | 400k tokens  | once            | Heads-up only — keep going, don't break early |
+| L2    | 135k tokens    | 435k tokens  | every 10 calls  | Wrap to a clean checkpoint, recommend `/compact` |
+| L3    | 145k tokens    | 465k tokens  | every 6 calls   | Stop new work, fill an evacuation template, recommend `/compact` |
+| L4    | 155k tokens    | 500k tokens  | every 3 calls   | End the turn now |
 
 Messages are phrased as a percentage of the high-performance window (L4 = 100% baseline). Raw token counts aren't useful to the model — it has no native sense of its own ceiling — so the percentage gives a calibrated signal.
 
 At L3 and above, an **evacuation template** with `[TODO]` fields is appended to `MISSION.md` in the project root, telling Claude exactly what to checkpoint (current task, files modified, next action) before `/compact`. A 30-minute cooldown plus a "skip if existing unfilled template" check prevents spam.
 
-Defaults target the standard 200k context window, where ~150k is the practical ceiling before quality degrades. The same configuration is sensible for 1M-context sessions — you stop wanting fresh nudges past ~150k regardless.
+## Profiles: 200k vs 1M context
+
+The thresholds depend on the active context window. A 200k window is reliable to ~150k; a 1M window holds up much further on *retrieval* — but **executive function** (instruction-following, multi-step discipline) degrades from around 400k, well before retrieval does, so the `1m` profile triggers in the 400–500k band rather than near the ceiling.
+
+`CC_CONTEXT_PROFILE` selects the set:
+
+- `auto` (default) — uses the `1m` profile unless `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` is set, which is how Claude Code signals the extended window is off. The window size itself is exposed to neither hooks nor the transcript, so this env var is the only signal available.
+- `200k` / `1m` — force a profile explicitly. Recommended if `auto` guesses wrong — e.g. an account on a 200k-only model with no disable flag set would otherwise be read as `1m`.
+
+Per-level `CC_CONTEXT_L*_TOKENS` env vars override individual thresholds regardless of profile.
 
 ## Install
 
@@ -41,7 +50,13 @@ Update with `/plugin marketplace update olliegilbey-plugins` then `/reload-plugi
 All settings are environment variables read at hook invocation time. Override in your shell before launching `claude`:
 
 ```bash
-# Thresholds (token counts)
+# Profile: auto (default) | 200k | 1m. auto picks 1m unless
+# CLAUDE_CODE_DISABLE_1M_CONTEXT=1. See "Profiles" above.
+export CC_CONTEXT_PROFILE=auto
+
+# Per-level threshold overrides (token counts). If set, these win over
+# the profile default for that level. Shown here at the 200k defaults;
+# the 1m profile defaults to 400000/435000/465000/500000.
 export CC_CONTEXT_L1_TOKENS=125000
 export CC_CONTEXT_L2_TOKENS=135000
 export CC_CONTEXT_L3_TOKENS=145000
@@ -80,9 +95,9 @@ Per-invocation source, token count, and current level are written to `${CLAUDE_P
 
 ## Verifying it works
 
-- After any tool call: `cat $HOME/.claude/plugins/data/context-budget-monitor/<session_id>/last_eval`. If the file exists, the hook is firing.
+- After any tool call: `cat ${CLAUDE_PLUGIN_DATA}/<session_id>/last_eval`. If the file exists, the hook is firing. The breadcrumb records `profile=` so you can confirm `auto` resolved the way you expect.
 - `source=estimate` means the transcript wasn't readable — check permissions on `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`.
-- In a long session, you should see L1 fire once around ~125k, then L2/L3/L4 escalate as work continues. After `/compact`, the level resets.
+- In a long session you should see L1 fire once (at ~125k on the `200k` profile, ~400k on `1m`), then L2/L3/L4 escalate as work continues. After `/compact`, the level resets.
 
 ## Credits
 

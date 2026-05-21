@@ -8,13 +8,13 @@
   "description": "Personal Claude Code plugins by olliegilbey.",
   "plugins": [
     {
-      "name": "context-budget-monitor",
+      "name": "rot-reducer",
       "source": {
         "source": "github",
-        "repo": "olliegilbey/context-budget-monitor"
+        "repo": "olliegilbey/rot-reducer"
       },
       "description": "Injects graduated context-budget warnings into Claude's context during long autonomous sessions. Inspired by yurukusa/cc-safe-setup.",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "license": "MIT",
       "category": "monitoring",
       "tags": ["context", "monitoring", "hooks"]

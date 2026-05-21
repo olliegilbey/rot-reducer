@@ -1,4 +1,4 @@
-# context-budget-monitor
+# rot-reducer
 
 > A Claude Code plugin that warns Claude itself when its context window is filling up, so long autonomous sessions wrap work cleanly before auto-compaction kicks in.
 
@@ -16,12 +16,10 @@ A `PostToolUse` hook reads the session transcript after every tool call, estimat
 |-------|----------------|--------------|-----------------|---------------------------|
 | L1    | 125k tokens    | 400k tokens  | once            | Heads-up only — keep going, don't break early |
 | L2    | 135k tokens    | 435k tokens  | every 10 calls  | Wrap to a clean checkpoint, recommend `/compact` |
-| L3    | 145k tokens    | 465k tokens  | every 6 calls   | Stop new work, fill an evacuation template, recommend `/compact` |
+| L3    | 145k tokens    | 465k tokens  | every 6 calls   | Stop new work, report status, recommend `/compact` |
 | L4    | 155k tokens    | 500k tokens  | every 3 calls   | End the turn now |
 
 Messages are phrased as a percentage of the high-performance window (L4 = 100% baseline). Raw token counts aren't useful to the model — it has no native sense of its own ceiling — so the percentage gives a calibrated signal.
-
-At L3 and above, an **evacuation template** with `[TODO]` fields is appended to `MISSION.md` in the project root, telling Claude exactly what to checkpoint (current task, files modified, next action) before `/compact`. A 30-minute cooldown plus a "skip if existing unfilled template" check prevents spam.
 
 ## Profiles: 200k vs 1M context
 
@@ -37,8 +35,8 @@ Per-level `CC_CONTEXT_L*_TOKENS` env vars override individual thresholds regardl
 ## Install
 
 ```text
-/plugin marketplace add olliegilbey/context-budget-monitor
-/plugin install context-budget-monitor@olliegilbey-plugins
+/plugin marketplace add olliegilbey/rot-reducer
+/plugin install rot-reducer@olliegilbey-plugins
 ```
 
 Pick **user** scope when prompted so every Claude session gets it. `jq` must be installed (`brew install jq` on macOS).
@@ -68,12 +66,6 @@ export CC_CONTEXT_L2_CADENCE=10
 export CC_CONTEXT_L3_CADENCE=6
 export CC_CONTEXT_L4_CADENCE=3
 
-# Mission file path (where the evacuation template is appended)
-export CC_CONTEXT_MISSION_FILE="$PWD/MISSION.md"
-
-# Evacuation template cooldown (seconds)
-export CC_CONTEXT_EVAC_COOLDOWN_SEC=1800
-
 # Tool-count fallback (used only when the transcript is unreadable)
 export CC_CONTEXT_FALLBACK_TOKENS_PER_CALL=800
 
@@ -101,7 +93,7 @@ Per-invocation source, token count, and current level are written to `${CLAUDE_P
 
 ## Credits
 
-Threshold structure, debug-log parsing, tool-count fallback, and evacuation template mechanism originate with [yurukusa/cc-safe-setup](https://github.com/yurukusa/cc-safe-setup)'s `context-monitor`. This plugin routes the warnings through the documented [`additionalContext`](https://code.claude.com/docs/en/hooks) hook output so the model reads them.
+Threshold structure, debug-log parsing, and tool-count fallback originate with [yurukusa/cc-safe-setup](https://github.com/yurukusa/cc-safe-setup)'s `context-monitor`. This plugin routes the warnings through the documented [`additionalContext`](https://code.claude.com/docs/en/hooks) hook output so the model reads them.
 
 ## License
 

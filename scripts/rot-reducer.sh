@@ -23,9 +23,11 @@ set -uo pipefail
 #   auto  - 1m unless CLAUDE_CODE_DISABLE_1M_CONTEXT=1 (Claude Code sets that
 #           env var when the extended window is turned off). This is the only
 #           window signal a hook can read — the size itself is exposed nowhere.
-#   200k  - standard window; ~150k is the practical ceiling.
-#   1m    - extended window; executive function degrades from ~400k (well
-#           before retrieval does), so thresholds sit in the 400-500k band.
+# The window size is a proxy for model generation, not the cause itself.
+#   200k  - older 200k-class models; weaker at long-context retrieval and
+#           more rot-prone, so ~150k is the practical ceiling.
+#   1m    - newer models that ship the 1M window; better at holding long
+#           context, so they stay coherent further out — 280-400k band.
 PROFILE="$(printf '%s' "${CC_CONTEXT_PROFILE:-auto}" | tr '[:upper:]' '[:lower:]')"
 if [ "$PROFILE" = "auto" ]; then
     if [ "${CLAUDE_CODE_DISABLE_1M_CONTEXT:-}" = "1" ]; then
@@ -38,7 +40,7 @@ fi
 # Per-profile threshold defaults. Individual CC_CONTEXT_L*_TOKENS env vars,
 # if set, override the profile default for that level.
 if [ "$PROFILE" = "1m" ]; then
-    L1_DEFAULT=400000; L2_DEFAULT=435000; L3_DEFAULT=465000; L4_DEFAULT=500000
+    L1_DEFAULT=280000; L2_DEFAULT=310000; L3_DEFAULT=360000; L4_DEFAULT=400000
 else
     PROFILE="200k"   # normalize any unrecognized value to the safe default
     L1_DEFAULT=125000; L2_DEFAULT=135000; L3_DEFAULT=145000; L4_DEFAULT=155000

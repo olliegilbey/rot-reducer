@@ -14,16 +14,16 @@ A `PostToolUse` hook reads the session transcript after every tool call, estimat
 
 | Level | `200k` trigger | `1m` trigger | Re-inject       | What Claude is told to do |
 |-------|----------------|--------------|-----------------|---------------------------|
-| L1    | 125k tokens    | 400k tokens  | once            | Heads-up only — keep going, don't break early |
-| L2    | 135k tokens    | 435k tokens  | every 10 calls  | Wrap to a clean checkpoint, recommend `/compact` |
-| L3    | 145k tokens    | 465k tokens  | every 6 calls   | Stop new work, report status, recommend `/compact` |
-| L4    | 155k tokens    | 500k tokens  | every 3 calls   | End the turn now |
+| L1    | 125k tokens    | 280k tokens  | once            | Heads-up only — keep going, don't break early |
+| L2    | 135k tokens    | 310k tokens  | every 10 calls  | Wrap to a clean checkpoint, recommend `/compact` |
+| L3    | 145k tokens    | 360k tokens  | every 6 calls   | Stop new work, report status, recommend `/compact` |
+| L4    | 155k tokens    | 400k tokens  | every 3 calls   | End the turn now |
 
 Messages are phrased as a percentage of the high-performance window (L4 = 100% baseline). Raw token counts aren't useful to the model — it has no native sense of its own ceiling — so the percentage gives a calibrated signal.
 
 ## Profiles: 200k vs 1M context
 
-The thresholds depend on the active context window. A 200k window is reliable to ~150k; a 1M window holds up much further on *retrieval* — but **executive function** (instruction-following, multi-step discipline) degrades from around 400k, well before retrieval does, so the `1m` profile triggers in the 400–500k band rather than near the ceiling.
+The profiles track **model capability, not window size as such** — the window is just a proxy for model generation. 200k-class models tend to be older and weaker at long-context retrieval, so they start to rot and lose multi-step discipline well before their nominal ceiling (~150k usable). The newer models that ship the 1M window are simply better at holding long context, so they stay coherent much further out, and the `1m` profile reflects that with a higher 280–400k band. A bigger window doesn't magically help — it's that the models behind it handle long context better.
 
 `CC_CONTEXT_PROFILE` selects the set:
 
@@ -54,7 +54,7 @@ export CC_CONTEXT_PROFILE=auto
 
 # Per-level threshold overrides (token counts). If set, these win over
 # the profile default for that level. Shown here at the 200k defaults;
-# the 1m profile defaults to 400000/435000/465000/500000.
+# the 1m profile defaults to 280000/310000/360000/400000.
 export CC_CONTEXT_L1_TOKENS=125000
 export CC_CONTEXT_L2_TOKENS=135000
 export CC_CONTEXT_L3_TOKENS=145000
@@ -89,7 +89,7 @@ Per-invocation source, token count, and current level are written to `${CLAUDE_P
 
 - After any tool call: `cat ${CLAUDE_PLUGIN_DATA}/<session_id>/last_eval`. If the file exists, the hook is firing. The breadcrumb records `profile=` so you can confirm `auto` resolved the way you expect.
 - `source=estimate` means the transcript wasn't readable — check permissions on `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`.
-- In a long session you should see L1 fire once (at ~125k on the `200k` profile, ~400k on `1m`), then L2/L3/L4 escalate as work continues. After `/compact`, the level resets.
+- In a long session you should see L1 fire once (at ~125k on the `200k` profile, ~280k on `1m`), then L2/L3/L4 escalate as work continues. After `/compact`, the level resets.
 
 ## Credits
 

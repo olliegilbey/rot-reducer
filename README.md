@@ -14,16 +14,20 @@ A `PostToolUse` hook reads the session transcript after every tool call, estimat
 
 | Level | `200k` trigger | `1m` trigger | Re-inject       | What Claude is told to do |
 |-------|----------------|--------------|-----------------|---------------------------|
-| L1    | 125k tokens    | 280k tokens  | once            | Heads-up only — keep going, don't break early |
-| L2    | 135k tokens    | 310k tokens  | every 10 calls  | Wrap to a clean checkpoint, recommend `/compact` |
-| L3    | 145k tokens    | 360k tokens  | every 6 calls   | Stop new work, report status, recommend `/compact` |
-| L4    | 155k tokens    | 400k tokens  | every 3 calls   | End the turn now |
+| L1    | 125k tokens    | 160k tokens  | once            | Heads-up only — keep going, look ahead to a natural pause |
+| L2    | 135k tokens    | 190k tokens  | every 10 calls  | Don't start new tasks or tangents |
+| L3    | 145k tokens    | 220k tokens  | every 6 calls   | Stop soon, suggest a fresh context window to the human |
+| L4    | 155k tokens    | 250k tokens  | every 3 calls   | Into reserves — continue only if it wraps in a few turns |
+
+"Re-inject" counts tool calls between repeats. `once` means the message fires on the *transition* into that level and never again while you stay there; it re-arms if usage drops below and later climbs back.
+
+The message text lives in one block at the top of `scripts/rot-reducer.sh` (`L1_MSG` … `L4_MSG`) and is meant to be edited to taste. The deliberate choice in the shipped wording is **not** to name a specific command — people use different exit strategies, and the model picks one that fits.
 
 Messages are phrased as a percentage of the high-performance window (L4 = 100% baseline). Raw token counts aren't useful to the model — it has no native sense of its own ceiling — so the percentage gives a calibrated signal.
 
 ## Profiles: 200k vs 1M context
 
-The profiles track **model capability, not window size as such** — the window is just a proxy for model generation. 200k-class models tend to be older and weaker at long-context retrieval, so they start to rot and lose multi-step discipline well before their nominal ceiling (~150k usable). The newer models that ship the 1M window are simply better at holding long context, so they stay coherent much further out, and the `1m` profile reflects that with a higher 280–400k band. A bigger window doesn't magically help — it's that the models behind it handle long context better.
+The profiles track **model capability, not window size as such** — the window is just a proxy for model generation. 200k-class models tend to be older and weaker at long-context retrieval, so they start to rot and lose multi-step discipline well before their nominal ceiling (~150k usable). The newer models that ship the 1M window are simply better at holding long context, so they stay coherent much further out, and the `1m` profile reflects that with a higher 160–250k band. A bigger window doesn't magically help — it's that the models behind it handle long context better.
 
 `CC_CONTEXT_PROFILE` selects the set:
 
@@ -39,9 +43,29 @@ Per-level `CC_CONTEXT_L*_TOKENS` env vars override individual thresholds regardl
 /plugin install rot-reducer@olliegilbey-plugins
 ```
 
-Pick **user** scope when prompted so every Claude session gets it. `jq` must be installed (`brew install jq` on macOS).
+`jq` must be installed (`brew install jq` on macOS).
 
-Update with `/plugin marketplace update olliegilbey-plugins` then `/reload-plugins`.
+Choose scope when prompted — **project** installs it for the current repo only, **user** for every session everywhere.
+
+## Updating to a new version
+
+Run both, in this order, from inside Claude Code:
+
+```text
+/plugin marketplace update olliegilbey-plugins
+/plugin update rot-reducer@olliegilbey-plugins
+```
+
+The first pulls the latest catalogue from GitHub; the second installs the new version. Then `/reload-plugins` (or restart Claude Code) to pick up the change in the running session.
+
+To confirm which version is actually live:
+
+```bash
+jq '.plugins["rot-reducer@olliegilbey-plugins"][].version' \
+  ~/.claude/plugins/installed_plugins.json
+```
+
+If that still shows the old number, the marketplace catalogue hasn't refreshed — re-run the first command. Note that an update installs into a new versioned directory; the old one stays on disk and is harmless.
 
 ## Configuration
 
@@ -54,7 +78,7 @@ export CC_CONTEXT_PROFILE=auto
 
 # Per-level threshold overrides (token counts). If set, these win over
 # the profile default for that level. Shown here at the 200k defaults;
-# the 1m profile defaults to 280000/310000/360000/400000.
+# the 1m profile defaults to 160000/190000/220000/250000.
 export CC_CONTEXT_L1_TOKENS=125000
 export CC_CONTEXT_L2_TOKENS=135000
 export CC_CONTEXT_L3_TOKENS=145000
@@ -85,11 +109,34 @@ Tried in order:
 
 Per-invocation source, token count, and current level are written to `${CLAUDE_PLUGIN_DATA}/<session_id>/last_eval`. State files are namespaced by `session_id` so concurrent sessions don't collide.
 
+## Fire log
+
+Every injection appends one line to `${CLAUDE_PLUGIN_DATA}/fires.log`, shared across all sessions:
+
+```text
+ts=2026-08-06T17:51:42 session=abc123 level=2 tokens=195400 pct=78 source=transcript profile=1m count=61
+```
+
+It records the **level number**, not the message text, so counts stay comparable after you rewrite the wording. Lines beginning with `#` are operator notes and are ignored by the tally below.
+
+```bash
+# fires by level, all time
+grep -v '^#' "$HOME/.claude/plugins/data/rot-reducer-olliegilbey-plugins/fires.log" \
+  | sed 's/.*level=\([0-9]*\).*/L\1/' | sort | uniq -c
+
+# distinct sessions that fired at least once
+grep -v '^#' "$HOME/.claude/plugins/data/rot-reducer-olliegilbey-plugins/fires.log" \
+  | sed 's/.*session=\([^ ]*\).*/\1/' | sort -u | wc -l
+```
+
+The log grows by one line per nudge — a few dozen lines a month in normal use. Delete it any time; it's diagnostic only and nothing reads it back.
+
 ## Verifying it works
 
 - After any tool call: `cat ${CLAUDE_PLUGIN_DATA}/<session_id>/last_eval`. If the file exists, the hook is firing. The breadcrumb records `profile=` so you can confirm `auto` resolved the way you expect.
 - `source=estimate` means the transcript wasn't readable — check permissions on `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`.
-- In a long session you should see L1 fire once (at ~125k on the `200k` profile, ~280k on `1m`), then L2/L3/L4 escalate as work continues. After `/compact`, the level resets.
+- In a long session you should see L1 fire once (at ~125k on the `200k` profile, ~160k on `1m`), then L2/L3/L4 escalate as work continues. After a compaction, the level resets.
+- `fires.log` (see below) is the durable record — `last_eval` only holds the most recent evaluation and is overwritten constantly.
 
 ## Credits
 

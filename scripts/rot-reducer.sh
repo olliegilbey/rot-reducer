@@ -27,28 +27,34 @@ set -uo pipefail
 #   200k  - older 200k-class models; weaker at long-context retrieval and
 #           more rot-prone, so ~150k is the practical ceiling.
 #   1m    - newer models that ship the 1M window; better at holding long
-#           context, so they stay coherent further out — 280-400k band.
+#           context, so they stay coherent further out — 160-250k band.
 PROFILE="$(printf '%s' "${CC_CONTEXT_PROFILE:-auto}" | tr '[:upper:]' '[:lower:]')"
 if [ "$PROFILE" = "auto" ]; then
-    if [ "${CLAUDE_CODE_DISABLE_1M_CONTEXT:-}" = "1" ]; then
-        PROFILE="200k"
-    else
-        PROFILE="1m"
-    fi
+  if [ "${CLAUDE_CODE_DISABLE_1M_CONTEXT:-}" = "1" ]; then
+    PROFILE="200k"
+  else
+    PROFILE="1m"
+  fi
 fi
 
 # Per-profile threshold defaults. Individual CC_CONTEXT_L*_TOKENS env vars,
 # if set, override the profile default for that level.
 if [ "$PROFILE" = "1m" ]; then
-    L1_DEFAULT=280000; L2_DEFAULT=310000; L3_DEFAULT=360000; L4_DEFAULT=400000
+  L1_DEFAULT=160000
+  L2_DEFAULT=190000
+  L3_DEFAULT=220000
+  L4_DEFAULT=250000
 else
-    PROFILE="200k"   # normalize any unrecognized value to the safe default
-    L1_DEFAULT=125000; L2_DEFAULT=135000; L3_DEFAULT=145000; L4_DEFAULT=155000
+  PROFILE="200k" # normalize any unrecognized value to the safe default
+  L1_DEFAULT=125000
+  L2_DEFAULT=135000
+  L3_DEFAULT=145000
+  L4_DEFAULT=155000
 fi
-L1_TOKENS="${CC_CONTEXT_L1_TOKENS:-$L1_DEFAULT}"   # caution
-L2_TOKENS="${CC_CONTEXT_L2_TOKENS:-$L2_DEFAULT}"   # wrap to checkpoint
-L3_TOKENS="${CC_CONTEXT_L3_TOKENS:-$L3_DEFAULT}"   # hard stop
-L4_TOKENS="${CC_CONTEXT_L4_TOKENS:-$L4_DEFAULT}"   # overdrive (L3 ignored)
+L1_TOKENS="${CC_CONTEXT_L1_TOKENS:-$L1_DEFAULT}" # caution
+L2_TOKENS="${CC_CONTEXT_L2_TOKENS:-$L2_DEFAULT}" # wrap to checkpoint
+L3_TOKENS="${CC_CONTEXT_L3_TOKENS:-$L3_DEFAULT}" # hard stop
+L4_TOKENS="${CC_CONTEXT_L4_TOKENS:-$L4_DEFAULT}" # overdrive (L3 ignored)
 
 # Re-injection cadence — tool calls between re-nudges at each level.
 # 0 disables periodic re-injection at that level (transition only).
@@ -70,16 +76,10 @@ L4_CADENCE="${CC_CONTEXT_L4_CADENCE:-3}"
 # strings is substituted. Note the doubled `%` in `~%PCT%%`: that is the
 # `%PCT%` placeholder immediately followed by a literal `%` sign.
 #
-# Tone guidance — preserve this intent if you rewrite the messages:
-#   L1 — heads-up ONLY. Never tell the model to /compact or /clear *now*; only
-#        to consider it later, at the current sub-task's natural endpoint.
-#   L2 — wrap to a clean checkpoint, recommend /compact or /clear, no new work.
-#   L3 — hard stop: report status, recommend /compact or /clear.
-#   L4 — end the turn immediately, no further tool calls.
-L1_MSG="Context at ~%PCT%% of high-performance window — heads-up only. Finish the current sub-task without changing course; at its natural endpoint consider \`/compact\` (continue) or \`/clear\` (switch). Do not break early."
-L2_MSG="Context at ~%PCT%% of high-performance window. Wrap to a clean checkpoint and recommend \`/compact\` (continue this work) or \`/clear\` (switch tasks) with a brief summary of what to preserve: architectural decisions, files modified, next task. Do not start new sub-tasks."
-L3_MSG="Context at ~%PCT%% of high-performance window. Stop. Report status (what is complete, what is next, where work is checkpointed) and recommend \`/compact\` or \`/clear\`. Do not start new work."
-L4_MSG="Context at ~%PCT%% — past high-performance window. End this turn now: status report and recommend \`/compact\` or \`/clear\`. No further tool calls."
+L1_MSG="NOTE: Your context is at ~%PCT%%. Consider a natural future pause point, to manage context. You'll get more updates on context as it expands."
+L2_MSG="NOTE: Now your context is at ~%PCT%%. Starting additional tasks or tangents is not recommended in your current window."
+L3_MSG="WARNING: Your context is now at ~%PCT%%. Consider imminent task stop and suggest to the human, to switch to a fresh context window."
+L4_MSG="WARNING: Context is at ~%PCT%% and has entered reserves. Continue only if the task can be wrapped in the next few turns."
 
 # Tool-count fallback: assumed tokens per tool call when transcript and
 # debug log are both unavailable. Crude but always available.
@@ -101,7 +101,7 @@ DATA_ROOT="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/rot-reducer}"
 # jq is required — without it we can't parse hook input or build clean JSON
 # output. Fail silently (exit 0, no stdout) so we don't break the session.
 if ! command -v jq >/dev/null 2>&1; then
-    exit 0
+  exit 0
 fi
 
 INPUT="$(cat)"
@@ -115,11 +115,11 @@ TRANSCRIPT_PATH="$(printf '%s' "$INPUT" | jq -r '.transcript_path // empty' 2>/d
 # hook fires inside a subagent. The `*/subagents/*` transcript path check is
 # kept as a belt-and-braces fallback for edge cases where agent_id isn't set.
 if [ "$INCLUDE_SUBAGENTS" != "1" ]; then
-    AGENT_ID="$(printf '%s' "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null)"
-    [ -n "$AGENT_ID" ] && exit 0
-    case "$TRANSCRIPT_PATH" in
-        */subagents/*) exit 0 ;;
-    esac
+  AGENT_ID="$(printf '%s' "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null)"
+  [ -n "$AGENT_ID" ] && exit 0
+  case "$TRANSCRIPT_PATH" in
+  */subagents/*) exit 0 ;;
+  esac
 fi
 
 # Without a session_id we can't safely namespace state. Bucket under "unknown".
@@ -158,105 +158,112 @@ LAST_INJECT_AT="$(cat "$INJECT_FILE" 2>/dev/null || echo 0)"
 # entries after it, and fall back to its `compactMetadata.postTokens` if none
 # exist yet.
 tokens_from_transcript() {
-    [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ] || return 1
-    local window after_boundary boundary_line_no boundary_json post_tokens result
-    window=$(tail -n 400 "$TRANSCRIPT_PATH" 2>/dev/null) || return 1
-    [ -n "$window" ] || return 1
+  [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ] || return 1
+  local window after_boundary boundary_line_no boundary_json post_tokens result
+  window=$(tail -n 400 "$TRANSCRIPT_PATH" 2>/dev/null) || return 1
+  [ -n "$window" ] || return 1
 
-    boundary_line_no=$(printf '%s\n' "$window" \
-        | grep -n '"subtype":"compact_boundary"' | tail -1 | cut -d: -f1)
-    if [ -n "$boundary_line_no" ]; then
-        boundary_json=$(printf '%s\n' "$window" | sed -n "${boundary_line_no}p")
-        post_tokens=$(printf '%s' "$boundary_json" \
-            | jq -r '.compactMetadata.postTokens // empty' 2>/dev/null)
-        after_boundary=$(printf '%s\n' "$window" | awk -v n="$boundary_line_no" 'NR>n')
-    else
-        after_boundary="$window"
-        post_tokens=""
-    fi
+  boundary_line_no=$(printf '%s\n' "$window" |
+    grep -n '"subtype":"compact_boundary"' | tail -1 | cut -d: -f1)
+  if [ -n "$boundary_line_no" ]; then
+    boundary_json=$(printf '%s\n' "$window" | sed -n "${boundary_line_no}p")
+    post_tokens=$(printf '%s' "$boundary_json" |
+      jq -r '.compactMetadata.postTokens // empty' 2>/dev/null)
+    after_boundary=$(printf '%s\n' "$window" | awk -v n="$boundary_line_no" 'NR>n')
+  else
+    after_boundary="$window"
+    post_tokens=""
+  fi
 
-    result=$(printf '%s\n' "$after_boundary" \
-        | grep '"usage"' \
-        | jq -r '
+  result=$(printf '%s\n' "$after_boundary" |
+    grep '"usage"' |
+    jq -r '
             select(.message.usage) | .message.usage |
             (.input_tokens // 0)
             + (.cache_read_input_tokens // 0)
             + (.cache_creation_input_tokens // 0)
-        ' 2>/dev/null \
-        | tail -1)
-    if [ -n "$result" ] && [ "$result" -gt 0 ] 2>/dev/null; then
-        echo "$result"
-        return 0
-    fi
+        ' 2>/dev/null |
+    tail -1)
+  if [ -n "$result" ] && [ "$result" -gt 0 ] 2>/dev/null; then
+    echo "$result"
+    return 0
+  fi
 
-    # No post-boundary usage entry yet — trust the boundary's own postTokens.
-    if [ -n "$post_tokens" ] && [ "$post_tokens" -gt 0 ] 2>/dev/null; then
-        echo "$post_tokens"
-        return 0
-    fi
-    return 1
+  # No post-boundary usage entry yet — trust the boundary's own postTokens.
+  if [ -n "$post_tokens" ] && [ "$post_tokens" -gt 0 ] 2>/dev/null; then
+    echo "$post_tokens"
+    return 0
+  fi
+  return 1
 }
 
 # Debug log: only populated when the user ran `claude --debug`. Same parsing
 # as the yurukusa reference — pick the most recent `autocompact: tokens=N`.
 tokens_from_debug() {
-    local debug_dir="$HOME/.claude/debug"
-    [ -d "$debug_dir" ] || return 1
-    local latest
-    # shellcheck disable=SC2012
-    latest="$(ls -t "$debug_dir"/*.txt 2>/dev/null | head -1)"
-    [ -n "$latest" ] || return 1
-    local line tokens
-    line="$(grep 'autocompact:' "$latest" 2>/dev/null | tail -1)"
-    [ -n "$line" ] || return 1
-    tokens="$(echo "$line" | sed 's/.*tokens=\([0-9]*\).*/\1/')"
-    [ -n "$tokens" ] && [ "$tokens" -gt 0 ] 2>/dev/null && { echo "$tokens"; return 0; }
-    return 1
+  local debug_dir="$HOME/.claude/debug"
+  [ -d "$debug_dir" ] || return 1
+  local latest
+  # shellcheck disable=SC2012
+  latest="$(ls -t "$debug_dir"/*.txt 2>/dev/null | head -1)"
+  [ -n "$latest" ] || return 1
+  local line tokens
+  line="$(grep 'autocompact:' "$latest" 2>/dev/null | tail -1)"
+  [ -n "$line" ] || return 1
+  tokens="$(echo "$line" | sed 's/.*tokens=\([0-9]*\).*/\1/')"
+  [ -n "$tokens" ] && [ "$tokens" -gt 0 ] 2>/dev/null && {
+    echo "$tokens"
+    return 0
+  }
+  return 1
 }
 
 # Tool-count fallback: crude linear estimate. Always succeeds.
 tokens_from_count() {
-    echo $((COUNT * FALLBACK_TOKENS_PER_CALL))
+  echo $((COUNT * FALLBACK_TOKENS_PER_CALL))
 }
 
 TOKENS=""
 SOURCE=""
 if TOKENS="$(tokens_from_transcript)"; then
-    SOURCE="transcript"
+  SOURCE="transcript"
 elif TOKENS="$(tokens_from_debug)"; then
-    SOURCE="debug"
+  SOURCE="debug"
 else
-    TOKENS="$(tokens_from_count)"
-    SOURCE="estimate"
+  TOKENS="$(tokens_from_count)"
+  SOURCE="estimate"
 fi
 
 # ----------------------------------------------------------------------------
 # Determine level and decide whether to inject
 # ----------------------------------------------------------------------------
 LEVEL=0
-if   [ "$TOKENS" -ge "$L4_TOKENS" ]; then LEVEL=4
-elif [ "$TOKENS" -ge "$L3_TOKENS" ]; then LEVEL=3
-elif [ "$TOKENS" -ge "$L2_TOKENS" ]; then LEVEL=2
-elif [ "$TOKENS" -ge "$L1_TOKENS" ]; then LEVEL=1
+if [ "$TOKENS" -ge "$L4_TOKENS" ]; then
+  LEVEL=4
+elif [ "$TOKENS" -ge "$L3_TOKENS" ]; then
+  LEVEL=3
+elif [ "$TOKENS" -ge "$L2_TOKENS" ]; then
+  LEVEL=2
+elif [ "$TOKENS" -ge "$L1_TOKENS" ]; then
+  LEVEL=1
 fi
 
 case "$LEVEL" in
-    1) CADENCE="$L1_CADENCE" ;;
-    2) CADENCE="$L2_CADENCE" ;;
-    3) CADENCE="$L3_CADENCE" ;;
-    4) CADENCE="$L4_CADENCE" ;;
-    *) CADENCE=0 ;;
+1) CADENCE="$L1_CADENCE" ;;
+2) CADENCE="$L2_CADENCE" ;;
+3) CADENCE="$L3_CADENCE" ;;
+4) CADENCE="$L4_CADENCE" ;;
+*) CADENCE=0 ;;
 esac
 
 INJECT=0
 if [ "$LEVEL" -gt "$LAST_LEVEL" ]; then
-    # Transitioning up into a new level — always inject.
-    INJECT=1
+  # Transitioning up into a new level — always inject.
+  INJECT=1
 elif [ "$LEVEL" -ge 1 ] && [ "$CADENCE" -gt 0 ]; then
-    SINCE=$((COUNT - LAST_INJECT_AT))
-    if [ "$SINCE" -ge "$CADENCE" ]; then
-        INJECT=1
-    fi
+  SINCE=$((COUNT - LAST_INJECT_AT))
+  if [ "$SINCE" -ge "$CADENCE" ]; then
+    INJECT=1
+  fi
 fi
 
 # Persist level regardless. This way a transition down (e.g. after /compact)
@@ -265,40 +272,49 @@ echo "$LEVEL" >"$LEVEL_FILE"
 
 # Debug breadcrumb (not injected into Claude's context — operator-only).
 {
-    printf 'ts=%s count=%d tokens=%d source=%s profile=%s level=%d last_level=%d inject=%d\n' \
-        "$(date '+%Y-%m-%dT%H:%M:%S')" "$COUNT" "$TOKENS" "$SOURCE" "$PROFILE" "$LEVEL" "$LAST_LEVEL" "$INJECT"
+  printf 'ts=%s count=%d tokens=%d source=%s profile=%s level=%d last_level=%d inject=%d\n' \
+    "$(date '+%Y-%m-%dT%H:%M:%S')" "$COUNT" "$TOKENS" "$SOURCE" "$PROFILE" "$LEVEL" "$LAST_LEVEL" "$INJECT"
 } >"$DEBUG_FILE" 2>/dev/null || true
 
 # ----------------------------------------------------------------------------
 # Build and emit message
 # ----------------------------------------------------------------------------
 if [ "$INJECT" -eq 1 ]; then
-    # Express usage as % of the high-performance context window, with L4 as
-    # the 100% baseline (the point at which the model is expected to be
-    # past comfortable operation). Raw token counts are not informative to
-    # the model — it doesn't know its own ceiling — but a normalized % is.
-    PCT=$((TOKENS * 100 / L4_TOKENS))
+  # Express usage as % of the high-performance context window, with L4 as
+  # the 100% baseline (the point at which the model is expected to be
+  # past comfortable operation). Raw token counts are not informative to
+  # the model — it doesn't know its own ceiling — but a normalized % is.
+  PCT=$((TOKENS * 100 / L4_TOKENS))
 
-    # Pick the template for this level (defined in the "Level messages"
-    # section above), then replace the %PCT% placeholder with the live value.
-    case "$LEVEL" in
-        1) MSG="$L1_MSG" ;;
-        2) MSG="$L2_MSG" ;;
-        3) MSG="$L3_MSG" ;;
-        4) MSG="$L4_MSG" ;;
-        *) MSG="" ;;
-    esac
-    MSG="${MSG//%PCT%/$PCT}"
+  # Pick the template for this level (defined in the "Level messages"
+  # section above), then replace the %PCT% placeholder with the live value.
+  case "$LEVEL" in
+  1) MSG="$L1_MSG" ;;
+  2) MSG="$L2_MSG" ;;
+  3) MSG="$L3_MSG" ;;
+  4) MSG="$L4_MSG" ;;
+  *) MSG="" ;;
+  esac
+  MSG="${MSG//%PCT%/$PCT}"
 
-    if [ -n "$MSG" ]; then
-        echo "$COUNT" >"$INJECT_FILE"
-        jq -n --arg ctx "$MSG" '{
+  if [ -n "$MSG" ]; then
+    echo "$COUNT" >"$INJECT_FILE"
+
+    # Append-only fire log, shared across every session. One line per
+    # injection, keyed on the level number rather than the message text, so
+    # counting past fires never depends on the current wording. Single small
+    # append per fire — safe enough for concurrent sessions.
+    printf 'ts=%s session=%s level=%d tokens=%d pct=%d source=%s profile=%s count=%d\n' \
+      "$(date '+%Y-%m-%dT%H:%M:%S')" "$SESSION_ID" "$LEVEL" "$TOKENS" "$PCT" \
+      "$SOURCE" "$PROFILE" "$COUNT" >>"${DATA_ROOT}/fires.log" 2>/dev/null || true
+
+    jq -n --arg ctx "$MSG" '{
             hookSpecificOutput: {
                 hookEventName: "PostToolUse",
                 additionalContext: $ctx
             }
         }'
-    fi
+  fi
 fi
 
 exit 0

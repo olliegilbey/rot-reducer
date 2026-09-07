@@ -1,8 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "rot-reducer",
-  "version": "0.3.0",
-  "description": "Injects graduated context-budget warnings into Claude's context during long sessions so the model wraps up cleanly before auto-compaction. Inspired by yurukusa/cc-safe-setup.",
+  "version": "0.4.0",
+  "description": "Counts down to Claude Code's auto-compaction boundary and asks Claude to leave a handoff behind, so long sessions carry their thread across the boundary instead of rediscovering it. Never tells the model to stop. Inspired by yurukusa/cc-safe-setup.",
   "author": {
     "name": "Ollie Gilbey",
     "email": "olliegilbey@gmail.com"
@@ -10,7 +10,8 @@
   "license": "MIT",
   "keywords": [
     "context",
-    "monitoring",
+    "compaction",
+    "handoff",
     "hooks",
     "autonomous",
     "yurukusa-inspired"

@@ -13,7 +13,7 @@
         "source": "github",
         "repo": "olliegilbey/rot-reducer"
       },
-      "description": "Injects graduated context-budget warnings into Claude's context during long autonomous sessions. Inspired by yurukusa/cc-safe-setup.",
+      "description": "Counts down to Claude Code's auto-compaction boundary and asks Claude to leave a handoff behind. Never tells the model to stop. Inspired by yurukusa/cc-safe-setup.",
       "version": "0.3.0",
       "license": "MIT",
       "category": "monitoring",

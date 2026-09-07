@@ -5,8 +5,13 @@
 #
 # Reads the hook input JSON on stdin, estimates how many tokens the current
 # session has consumed, and emits a `hookSpecificOutput.additionalContext`
-# message on stdout when a configured threshold is crossed (or re-fires at
-# a graduated cadence so the nudge keeps appearing as the budget tightens).
+# message on stdout as the session approaches Claude Code's auto-compaction
+# boundary. The message asks the model to leave a handoff behind, so work
+# continues cleanly once the transcript is replaced by a summary.
+#
+# It never tells the model to stop. A session that stalls short of the
+# boundary is strictly worse off than one that runs through it: it gets
+# neither the compaction nor the work.
 #
 # Inspired by yurukusa/cc-safe-setup's context-monitor, which writes warnings
 # to stderr that only the human sees. This variant uses the documented hook
@@ -19,76 +24,48 @@ set -uo pipefail
 # ----------------------------------------------------------------------------
 # Configuration (override via environment)
 # ----------------------------------------------------------------------------
-# Profile selects the threshold set for the active context window.
-#   auto  - 1m unless CLAUDE_CODE_DISABLE_1M_CONTEXT=1 (Claude Code sets that
-#           env var when the extended window is turned off). This is the only
-#           window signal a hook can read — the size itself is exposed nowhere.
-# The window size is a proxy for model generation, not the cause itself.
-#   200k  - older 200k-class models; weaker at long-context retrieval and
-#           more rot-prone, so ~150k is the practical ceiling.
-#   1m    - newer models that ship the 1M window; better at holding long
-#           context, so they stay coherent further out — 160-250k band.
-PROFILE="$(printf '%s' "${CC_CONTEXT_PROFILE:-auto}" | tr '[:upper:]' '[:lower:]')"
-if [ "$PROFILE" = "auto" ]; then
-  if [ "${CLAUDE_CODE_DISABLE_1M_CONTEXT:-}" = "1" ]; then
-    PROFILE="200k"
-  else
-    PROFILE="1m"
-  fi
-fi
+# Fires are anchored to the auto-compaction boundary B, not to absolute token
+# counts. Five of them, at fixed distances below B. Fixed rather than
+# proportional because what matters is how much room is left to write a
+# handoff in, and that is an absolute amount of work.
+FIRE_OFFSETS="${CC_CONTEXT_FIRE_OFFSETS:-50000 40000 30000 20000 10000}"
 
-# Per-profile threshold defaults. Individual CC_CONTEXT_L*_TOKENS env vars,
-# if set, override the profile default for that level.
-if [ "$PROFILE" = "1m" ]; then
-  L1_DEFAULT=160000
-  L2_DEFAULT=190000
-  L3_DEFAULT=220000
-  L4_DEFAULT=250000
-else
-  PROFILE="200k" # normalize any unrecognized value to the safe default
-  L1_DEFAULT=125000
-  L2_DEFAULT=135000
-  L3_DEFAULT=145000
-  L4_DEFAULT=155000
-fi
-L1_TOKENS="${CC_CONTEXT_L1_TOKENS:-$L1_DEFAULT}" # caution
-L2_TOKENS="${CC_CONTEXT_L2_TOKENS:-$L2_DEFAULT}" # wrap to checkpoint
-L3_TOKENS="${CC_CONTEXT_L3_TOKENS:-$L3_DEFAULT}" # hard stop
-L4_TOKENS="${CC_CONTEXT_L4_TOKENS:-$L4_DEFAULT}" # overdrive (L3 ignored)
+# Fallback boundary, used only when `autoCompactWindow` is set nowhere. The
+# real default in that case is model-specific and readable from nothing, so
+# these are a guess. The window size is a proxy for model generation:
+#   1m   - newer models that ship the 1M window.
+#   200k - older 200k-class models.
+# CLAUDE_CODE_DISABLE_1M_CONTEXT is the only window signal a hook can read.
+# It errs toward 1m, which is the right way to be wrong now that nearly
+# everything is a 1m model.
+FALLBACK_1M="${CC_CONTEXT_FALLBACK_1M:-300000}"
+FALLBACK_200K="${CC_CONTEXT_FALLBACK_200K:-180000}"
 
-# Re-injection cadence — tool calls between re-nudges at each level.
-# 0 disables periodic re-injection at that level (transition only).
-L1_CADENCE="${CC_CONTEXT_L1_CADENCE:-0}"
-L2_CADENCE="${CC_CONTEXT_L2_CADENCE:-10}"
-L3_CADENCE="${CC_CONTEXT_L3_CADENCE:-6}"
-L4_CADENCE="${CC_CONTEXT_L4_CADENCE:-3}"
+# A boundary below this is treated as unusable (the lowest offset would land
+# at or below zero) and we fall back to the defaults above.
+MIN_USABLE_BOUNDARY=60000
 
 # ----------------------------------------------------------------------------
-# Level messages
+# Messages
 # ----------------------------------------------------------------------------
-# One message per level (L1 = first caution ... L4 = past the usable window).
-# A message is injected into the model's context when its level is first
-# crossed, then re-injected at the cadence set above. Edit the wording freely.
+# Fires 1-4 suggest; fire 5 instructs. The escalation is in tone, not volume.
 #
-# Placeholder: the literal token `%PCT%` is substituted at emit time with the
-# live context usage as a whole-number percentage of the high-performance
-# window (L4 = 100%). It is a plain find-and-replace — nothing else in these
-# strings is substituted. Note the doubled `%` in `~%PCT%%`: that is the
-# `%PCT%` placeholder immediately followed by a literal `%` sign.
+# Placeholder: the literal token `%LEFT%` is substituted at emit time with the
+# tokens remaining until the boundary, rounded to the nearest thousand and
+# comma-grouped. It is a plain find-and-replace — nothing else in these
+# strings is substituted.
 #
-L1_MSG="NOTE: Your context is at ~%PCT%%. Consider a natural future pause point, to manage context. You'll get more updates on context as it expands."
-L2_MSG="NOTE: Now your context is at ~%PCT%%. Starting additional tasks or tangents is not recommended in your current window."
-L3_MSG="WARNING: Your context is now at ~%PCT%%. Consider imminent task stop and suggest to the human, to switch to a fresh context window."
-L4_MSG="WARNING: Context is at ~%PCT%% and has entered reserves. Continue only if the task can be wrapped in the next few turns."
+SUGGEST_MSG="NOTE: ~%LEFT% tokens until auto-compaction. Consider creating or refreshing a handoff with task state, decisions, and next steps. Keep working."
+INSTRUCT_MSG="WARNING: ~%LEFT% tokens until auto-compaction. Write or update your handoff now. Keep working through the boundary. Stopping short strands the session."
 
 # Tool-count fallback: assumed tokens per tool call when transcript and
-# debug log are both unavailable. Crude but always available.
+# debug log are both unavailable. Crude, and a weak fit against a hard
+# boundary — it can fire early or not at all. Kept only as last resort.
 FALLBACK_TOKENS_PER_CALL="${CC_CONTEXT_FALLBACK_TOKENS_PER_CALL:-800}"
 
 # Include subagents in budget monitoring. Off by default — subagents
-# can't run `/compact` or `/clear`, so a nudge to them is meaningless
-# and the main agent ends up parroting the subagent's warning back.
-# Set to 1 to inject into subagent contexts anyway.
+# can't carry a handoff into the parent session, so a nudge to them is
+# meaningless and the main agent ends up parroting it back.
 INCLUDE_SUBAGENTS="${CC_CONTEXT_INCLUDE_SUBAGENTS:-0}"
 
 # Per-plugin persistent state dir. Provided by Claude Code as
@@ -98,8 +75,8 @@ DATA_ROOT="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/rot-reducer}"
 # ----------------------------------------------------------------------------
 # Read and parse hook input from stdin
 # ----------------------------------------------------------------------------
-# jq is required — without it we can't parse hook input or build clean JSON
-# output. Fail silently (exit 0, no stdout) so we don't break the session.
+# jq is required — without it we can't parse hook input, read settings, or
+# build clean JSON output. Fail silently (exit 0, no stdout).
 if ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
@@ -109,6 +86,7 @@ INPUT="$(cat)"
 
 SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)"
 TRANSCRIPT_PATH="$(printf '%s' "$INPUT" | jq -r '.transcript_path // empty' 2>/dev/null)"
+CWD="$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)"
 
 # Skip subagent tool calls unless explicitly opted-in. Canonical signal is
 # the documented `agent_id` field, which Claude Code populates only when the
@@ -129,17 +107,141 @@ STATE_DIR="${DATA_ROOT}/${SESSION_ID}"
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 
 COUNT_FILE="${STATE_DIR}/count"
-LEVEL_FILE="${STATE_DIR}/level"
-INJECT_FILE="${STATE_DIR}/last_inject_at"
+FIRED_FILE="${STATE_DIR}/fired"
+CONFIG_FILE="${STATE_DIR}/config"
 DEBUG_FILE="${STATE_DIR}/last_eval"
 
-# Increment tool-call counter (used for both cadence and fallback estimation).
+# Increment tool-call counter (used only for the fallback token estimate).
 COUNT="$(cat "$COUNT_FILE" 2>/dev/null || echo 0)"
 COUNT=$((COUNT + 1))
 echo "$COUNT" >"$COUNT_FILE"
 
-LAST_LEVEL="$(cat "$LEVEL_FILE" 2>/dev/null || echo 0)"
-LAST_INJECT_AT="$(cat "$INJECT_FILE" 2>/dev/null || echo 0)"
+LAST_FIRED="$(cat "$FIRED_FILE" 2>/dev/null || echo 0)"
+
+# ----------------------------------------------------------------------------
+# Resolve the auto-compaction boundary
+# ----------------------------------------------------------------------------
+# Precedence, highest first (matching Claude Code's own settings order, minus
+# the two we cannot see):
+#   CLAUDE_CODE_AUTO_COMPACT_WINDOW   (env, plain integers only)
+#   <cwd>/.claude/settings.local.json
+#   <cwd>/.claude/settings.json
+#   ~/.claude/settings.local.json
+#   ~/.claude/settings.json
+#
+# We cannot read managed policy or the `--autocompact` command-line flag. A
+# session started with that flag will be measured against the wrong number;
+# that blind spot is unclosable from a hook and is accepted.
+
+settings_files() {
+  [ -n "$CWD" ] && printf '%s\n%s\n' \
+    "${CWD}/.claude/settings.local.json" \
+    "${CWD}/.claude/settings.json"
+  printf '%s\n%s\n' \
+    "${HOME}/.claude/settings.local.json" \
+    "${HOME}/.claude/settings.json"
+}
+
+# First value found for a top-level key, walking files in precedence order.
+setting_value() {
+  local key="$1" file val
+  while IFS= read -r file; do
+    [ -r "$file" ] || continue
+    # `//` treats `false` as absent, so `has` is the only safe test here:
+    # autoCompactEnabled is a boolean and false is exactly the value we need.
+    val="$(jq -r --arg k "$key" 'if has($k) then (.[$k] | tostring) else empty end' "$file" 2>/dev/null)"
+    if [ -n "$val" ]; then
+      printf '%s' "$val"
+      return 0
+    fi
+  done < <(settings_files)
+  return 1
+}
+
+# Accepted forms: "500k", "1M", 200000, and a bare number 100-1000 meaning
+# thousands. Echoes an integer token count, or nothing if unparseable.
+parse_window() {
+  local raw n
+  raw="$(printf '%s' "$1" | tr -d '"' | tr '[:upper:]' '[:lower:]')"
+  case "$raw" in
+  *k)
+    n="${raw%k}"
+    case "$n" in *[!0-9]*) return 1 ;; esac
+    echo $((n * 1000))
+    ;;
+  *m)
+    n="${raw%m}"
+    case "$n" in *[!0-9]*) return 1 ;; esac
+    echo $((n * 1000000))
+    ;;
+  *)
+    case "$raw" in '' | *[!0-9]*) return 1 ;; esac
+    if [ "$raw" -ge 100 ] && [ "$raw" -le 1000 ]; then
+      echo $((raw * 1000))
+    else
+      echo "$raw"
+    fi
+    ;;
+  esac
+}
+
+resolve_config() {
+  local enabled window boundary profile origin
+
+  # Compaction switched off means no boundary exists, so every message this
+  # hook could send would be describing an event that will never happen.
+  enabled="$(setting_value autoCompactEnabled)"
+  if [ "$enabled" = "false" ]; then
+    echo "disabled"
+    return 0
+  fi
+
+  boundary=""
+  origin=""
+  if [ -n "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}" ]; then
+    boundary="$(parse_window "$CLAUDE_CODE_AUTO_COMPACT_WINDOW")" && origin="env"
+  fi
+  if [ -z "$boundary" ]; then
+    window="$(setting_value autoCompactWindow)"
+    if [ -n "$window" ]; then
+      boundary="$(parse_window "$window")" && origin="settings"
+    fi
+  fi
+
+  # Nothing set anywhere, or a value too small to hang five offsets off.
+  if [ -z "$boundary" ] || [ "$boundary" -lt "$MIN_USABLE_BOUNDARY" ] 2>/dev/null; then
+    if [ "${CLAUDE_CODE_DISABLE_1M_CONTEXT:-}" = "1" ]; then
+      profile="200k"
+      boundary="$FALLBACK_200K"
+    else
+      profile="1m"
+      boundary="$FALLBACK_1M"
+    fi
+    origin="fallback-${profile}"
+  fi
+
+  echo "${boundary} ${origin}"
+}
+
+# Resolved once per session and cached. The window will not move mid-session,
+# and this hook runs on every single tool call.
+if [ -r "$CONFIG_FILE" ]; then
+  CONFIG="$(cat "$CONFIG_FILE" 2>/dev/null)"
+else
+  CONFIG="$(resolve_config)"
+  printf '%s' "$CONFIG" >"$CONFIG_FILE" 2>/dev/null || true
+fi
+
+if [ "$CONFIG" = "disabled" ]; then
+  {
+    printf 'ts=%s count=%d skipped=auto-compaction-disabled\n' \
+      "$(date '+%Y-%m-%dT%H:%M:%S')" "$COUNT"
+  } >"$DEBUG_FILE" 2>/dev/null || true
+  exit 0
+fi
+
+BOUNDARY="${CONFIG%% *}"
+ORIGIN="${CONFIG##* }"
 
 # ----------------------------------------------------------------------------
 # Token sources, tried in order: transcript → debug log → tool-count estimate
@@ -152,11 +254,10 @@ LAST_INJECT_AT="$(cat "$INJECT_FILE" 2>/dev/null || echo 0)"
 #
 # Compact-aware: Claude Code writes a `"subtype":"compact_boundary"` line on
 # auto- and manual-compact. Pre-boundary `usage` entries report the OLD
-# (pre-compact) context size and would trigger spurious L2/L3 fires for the
-# few seconds before the first post-compact assistant turn lands its own
-# `usage` entry. We anchor on the most recent boundary, only consider `usage`
-# entries after it, and fall back to its `compactMetadata.postTokens` if none
-# exist yet.
+# (pre-compact) context size and would trigger spurious fires for the few
+# seconds before the first post-compact assistant turn lands its own `usage`
+# entry. We anchor on the most recent boundary, only consider `usage` entries
+# after it, and fall back to its `compactMetadata.postTokens` if none exist yet.
 tokens_from_transcript() {
   [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ] || return 1
   local window after_boundary boundary_line_no boundary_json post_tokens result
@@ -234,87 +335,85 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# Determine level and decide whether to inject
+# Which fire are we at, and has it already gone off?
 # ----------------------------------------------------------------------------
-LEVEL=0
-if [ "$TOKENS" -ge "$L4_TOKENS" ]; then
-  LEVEL=4
-elif [ "$TOKENS" -ge "$L3_TOKENS" ]; then
-  LEVEL=3
-elif [ "$TOKENS" -ge "$L2_TOKENS" ]; then
-  LEVEL=2
-elif [ "$TOKENS" -ge "$L1_TOKENS" ]; then
-  LEVEL=1
+# Fire index counts how many trigger points the session has passed:
+#   0     below the first trigger
+#   1-5   at that fire's trigger point
+#   6     past the boundary itself, where we go quiet
+#
+# Index is recomputed from live tokens every call and persisted every call, so
+# a compaction (which drops tokens) re-arms the whole schedule on the way back
+# up. That is deliberate: after a compaction the model genuinely has room again.
+FIRE=0
+IDX=0
+for OFFSET in $FIRE_OFFSETS; do
+  IDX=$((IDX + 1))
+  TRIGGER=$((BOUNDARY - OFFSET))
+  if [ "$TOKENS" -ge "$TRIGGER" ]; then
+    FIRE="$IDX"
+  fi
+done
+TOTAL_FIRES="$IDX"
+if [ "$TOKENS" -ge "$BOUNDARY" ]; then
+  FIRE=$((TOTAL_FIRES + 1))
 fi
-
-case "$LEVEL" in
-1) CADENCE="$L1_CADENCE" ;;
-2) CADENCE="$L2_CADENCE" ;;
-3) CADENCE="$L3_CADENCE" ;;
-4) CADENCE="$L4_CADENCE" ;;
-*) CADENCE=0 ;;
-esac
 
 INJECT=0
-if [ "$LEVEL" -gt "$LAST_LEVEL" ]; then
-  # Transitioning up into a new level — always inject.
+if [ "$FIRE" -gt "$LAST_FIRED" ] && [ "$FIRE" -ge 1 ] && [ "$FIRE" -le "$TOTAL_FIRES" ]; then
   INJECT=1
-elif [ "$LEVEL" -ge 1 ] && [ "$CADENCE" -gt 0 ]; then
-  SINCE=$((COUNT - LAST_INJECT_AT))
-  if [ "$SINCE" -ge "$CADENCE" ]; then
-    INJECT=1
-  fi
 fi
 
-# Persist level regardless. This way a transition down (e.g. after /compact)
-# is recorded without firing, and the next upward crossing fires fresh.
-echo "$LEVEL" >"$LEVEL_FILE"
+echo "$FIRE" >"$FIRED_FILE"
 
 # Debug breadcrumb (not injected into Claude's context — operator-only).
 {
-  printf 'ts=%s count=%d tokens=%d source=%s profile=%s level=%d last_level=%d inject=%d\n' \
-    "$(date '+%Y-%m-%dT%H:%M:%S')" "$COUNT" "$TOKENS" "$SOURCE" "$PROFILE" "$LEVEL" "$LAST_LEVEL" "$INJECT"
+  printf 'ts=%s count=%d tokens=%d source=%s boundary=%d origin=%s fire=%d last_fired=%d inject=%d\n' \
+    "$(date '+%Y-%m-%dT%H:%M:%S')" "$COUNT" "$TOKENS" "$SOURCE" \
+    "$BOUNDARY" "$ORIGIN" "$FIRE" "$LAST_FIRED" "$INJECT"
 } >"$DEBUG_FILE" 2>/dev/null || true
 
 # ----------------------------------------------------------------------------
 # Build and emit message
 # ----------------------------------------------------------------------------
 if [ "$INJECT" -eq 1 ]; then
-  # Express usage as % of the high-performance context window, with L4 as
-  # the 100% baseline (the point at which the model is expected to be
-  # past comfortable operation). Raw token counts are not informative to
-  # the model — it doesn't know its own ceiling — but a normalized % is.
-  PCT=$((TOKENS * 100 / L4_TOKENS))
+  LEFT=$((BOUNDARY - TOKENS))
+  [ "$LEFT" -lt 0 ] && LEFT=0
+  # Round to the nearest thousand and comma-group. The message says "~", and
+  # an exact figure implies a precision the token estimate doesn't have.
+  LEFT_ROUNDED=$(((LEFT + 500) / 1000 * 1000))
+  LEFT_PRETTY="$(awk -v n="$LEFT_ROUNDED" 'BEGIN {
+        s = sprintf("%d", n); out = ""
+        while (length(s) > 3) {
+            out = "," substr(s, length(s) - 2) out
+            s = substr(s, 1, length(s) - 3)
+        }
+        print s out
+    }')"
 
-  # Pick the template for this level (defined in the "Level messages"
-  # section above), then replace the %PCT% placeholder with the live value.
-  case "$LEVEL" in
-  1) MSG="$L1_MSG" ;;
-  2) MSG="$L2_MSG" ;;
-  3) MSG="$L3_MSG" ;;
-  4) MSG="$L4_MSG" ;;
-  *) MSG="" ;;
-  esac
-  MSG="${MSG//%PCT%/$PCT}"
-
-  if [ -n "$MSG" ]; then
-    echo "$COUNT" >"$INJECT_FILE"
-
-    # Append-only fire log, shared across every session. One line per
-    # injection, keyed on the level number rather than the message text, so
-    # counting past fires never depends on the current wording. Single small
-    # append per fire — safe enough for concurrent sessions.
-    printf 'ts=%s session=%s level=%d tokens=%d pct=%d source=%s profile=%s count=%d\n' \
-      "$(date '+%Y-%m-%dT%H:%M:%S')" "$SESSION_ID" "$LEVEL" "$TOKENS" "$PCT" \
-      "$SOURCE" "$PROFILE" "$COUNT" >>"${DATA_ROOT}/fires.log" 2>/dev/null || true
-
-    jq -n --arg ctx "$MSG" '{
-            hookSpecificOutput: {
-                hookEventName: "PostToolUse",
-                additionalContext: $ctx
-            }
-        }'
+  # Fires 1 to n-1 suggest; the last one instructs.
+  if [ "$FIRE" -ge "$TOTAL_FIRES" ]; then
+    MSG="$INSTRUCT_MSG"
+    LEVEL=4
+  else
+    MSG="$SUGGEST_MSG"
+    LEVEL=3
   fi
+  MSG="${MSG//%LEFT%/$LEFT_PRETTY}"
+
+  # Append-only fire log, shared across every session. One line per injection.
+  # `level` is kept alongside `fire` so the historical log stays comparable.
+  printf 'ts=%s session=%s fire=%d level=%d tokens=%d left=%d boundary=%d origin=%s source=%s count=%d\n' \
+    "$(date '+%Y-%m-%dT%H:%M:%S')" "$SESSION_ID" "$FIRE" "$LEVEL" "$TOKENS" \
+    "$LEFT" "$BOUNDARY" "$ORIGIN" "$SOURCE" "$COUNT" \
+    >>"${DATA_ROOT}/fires.log" 2>/dev/null || true
+
+  jq -n --arg ctx "$MSG" '{
+        hookSpecificOutput: {
+            hookEventName: "PostToolUse",
+            additionalContext: $ctx
+        }
+    }'
 fi
 
 exit 0

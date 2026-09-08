@@ -30,19 +30,21 @@ jq '{autoCompactEnabled, autoCompactWindow}' ~/.claude/settings.json
 
 A `PostToolUse` hook reads the session transcript after every tool call, estimates current token usage, and injects an `additionalContext` message that Claude reads on its next turn. Fires are anchored to your compaction boundary rather than to fixed token counts, so they follow the boundary wherever you set it.
 
-Five fires, at fixed distances below the boundary `B`:
+Three fires, at fixed distances below the boundary `B`:
 
 | Fire | Trigger | At `B` = 300k | At `B` = 180k | What Claude is told |
 |------|---------|---------------|---------------|---------------------|
-| 1 | `B` − 50k | 250k | 130k | Suggestion: create or refresh a handoff, keep working |
-| 2 | `B` − 40k | 260k | 140k | Same, 40,000 remaining |
-| 3 | `B` − 30k | 270k | 150k | Same, 30,000 remaining |
-| 4 | `B` − 20k | 280k | 160k | Same, 20,000 remaining |
-| 5 | `B` − 10k | 290k | 170k | Instruction: write or update the handoff now |
+| 1 | `B` − 70k | 230k | 110k | Suggestion: create or refresh a handoff, keep working |
+| 2 | `B` − 60k | 240k | 120k | Same, with a smaller number |
+| 3 | `B` − 50k | 250k | 130k | Instruction: write or update the handoff now |
+
+Tuned from live behaviour rather than guessed. An agent that saw the first note
+wrote its handoff on the spot, so the useful window turns out to be well before
+the boundary rather than hard up against it.
 
 Each fires once, on first upward crossing. Past `B` the hook goes quiet, since compaction is imminent by definition and the message has landed five times. After a compaction the token count drops and the whole schedule re-arms, which is deliberate: the model genuinely has room again.
 
-The first four suggest and the last one instructs. The escalation is in tone, not volume. Every message carries a live countdown, so each one tells Claude something the last did not, and every one of them ends in *keep working*.
+The first two suggest and the last one instructs. The escalation is in tone, not volume. Every message carries a live countdown, so each one tells Claude something the last did not, and every one of them ends in *keep working*.
 
 Distances are fixed rather than proportional because what matters is how much room is left to write a handoff in, and that is an absolute amount of work, not a fraction of a window.
 
@@ -100,7 +102,12 @@ All settings are environment variables read at hook invocation time. Override in
 ```bash
 # Distances below the boundary at which to fire, outermost first.
 # The last one instructs; the rest suggest. Any count works.
-export CC_CONTEXT_FIRE_OFFSETS="50000 40000 30000 20000 10000"
+export CC_CONTEXT_FIRE_OFFSETS="70000 60000 50000"
+
+# Claude Code compacts before the configured window, since it needs room to
+# run the summary itself. Observed at 284,061 against a 300k setting. Only
+# the countdown shown to Claude uses this; fire points ignore it.
+export CC_CONTEXT_EFFECTIVE_PCT=95
 
 # Guessed boundary, used only when autoCompactWindow is set nowhere.
 export CC_CONTEXT_FALLBACK_1M=300000
@@ -119,7 +126,7 @@ export CC_CONTEXT_INCLUDE_SUBAGENTS=0
 
 Tried in order:
 
-1. **Transcript JSONL** (primary). Sums the most recent assistant turn's `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`. Compact-aware: anchors on `compact_boundary` events and only counts post-boundary `usage` entries, falling back to `compactMetadata.postTokens` if no fresh turn has landed yet. This prevents spurious fires in the few-second window right after a compaction.
+1. **Transcript JSONL** (primary). Sums the most recent assistant turn's `input_tokens + cache_read_input_tokens + cache_creation_input_tokens + output_tokens`. Output counts because the model's own reply becomes context on the very next turn; omitting it undercounted by 41,000 tokens on one observed session, enough to miss the boundary entirely. Compact-aware: anchors on `compact_boundary` events and only counts post-boundary `usage` entries, falling back to `compactMetadata.postTokens` if no fresh turn has landed yet. This prevents spurious fires in the few-second window right after a compaction.
 2. **Debug log**. Parses `~/.claude/debug/*.txt` for `autocompact: tokens=N`. Only populated under `claude --debug`.
 3. **Tool-call count estimate**. `count × FALLBACK_TOKENS_PER_CALL`. Always available, but a weak fit against a hard boundary: a crude estimate can fire early or not at all. Last resort only.
 
@@ -149,7 +156,7 @@ grep -v '^#' "$LOG" | sed 's/.*session=\([^ ]*\).*/\1/' | sort | uniq -c \
   | awk '{n++; t+=$1} END {printf "%.1f across %d sessions\n", t/n, n}'
 ```
 
-The log grows by at most five lines per session. Delete it any time; it's diagnostic only and nothing reads it back.
+The log grows by at most three lines per session. Delete it any time; it's diagnostic only and nothing reads it back.
 
 ## Verifying it works
 
@@ -157,7 +164,7 @@ The log grows by at most five lines per session. Delete it any time; it's diagno
 - `skipped=auto-compaction-disabled` in that file means exactly what it says. Turn compaction on; nothing else will happen until you do.
 - Check `boundary=` and `origin=` in the same line to confirm the window resolved the way you expect.
 - `source=estimate` means the transcript wasn't readable. Check permissions on `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`.
-- In a long session you should see one fire per trigger point, five in total, then silence. After a compaction the schedule re-arms.
+- In a long session you should see one fire per trigger point, three in total, then silence. After a compaction the schedule re-arms.
 - `fires.log` is the durable record. `last_eval` only holds the most recent evaluation and is overwritten constantly.
 
 ## Tests

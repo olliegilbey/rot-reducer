@@ -25,10 +25,14 @@ set -uo pipefail
 # Configuration (override via environment)
 # ----------------------------------------------------------------------------
 # Fires are anchored to the auto-compaction boundary B, not to absolute token
-# counts. Five of them, at fixed distances below B. Fixed rather than
-# proportional because what matters is how much room is left to write a
-# handoff in, and that is an absolute amount of work.
-FIRE_OFFSETS="${CC_CONTEXT_FIRE_OFFSETS:-50000 40000 30000 20000 10000}"
+# counts. Three of them, at fixed distances below B: two suggestions then one
+# instruction. Fixed rather than proportional because what matters is how much
+# room is left to write a handoff in, and that is an absolute amount of work.
+#
+# Against a 300k window these land at 230k, 240k and 250k. Tuned from live
+# behaviour: an agent that saw the first note wrote its handoff immediately, so
+# the useful window is well before the boundary, not hard up against it.
+FIRE_OFFSETS="${CC_CONTEXT_FIRE_OFFSETS:-70000 60000 50000}"
 
 # Fallback boundary, used only when `autoCompactWindow` is set nowhere. The
 # real default in that case is model-specific and readable from nothing, so
@@ -44,6 +48,12 @@ FALLBACK_200K="${CC_CONTEXT_FALLBACK_200K:-180000}"
 # A boundary below this is treated as unusable (the lowest offset would land
 # at or below zero) and we fall back to the defaults above.
 MIN_USABLE_BOUNDARY=60000
+
+# Claude Code compacts BEFORE the configured window, needing room to run the
+# summarisation. Observed at 284,061 against a 300k setting, so ~95%. Only the
+# countdown shown to the model uses this; the fire points hang off the
+# configured window itself.
+EFFECTIVE_PCT="${CC_CONTEXT_EFFECTIVE_PCT:-95}"
 
 # ----------------------------------------------------------------------------
 # Messages
@@ -283,6 +293,7 @@ tokens_from_transcript() {
             (.input_tokens // 0)
             + (.cache_read_input_tokens // 0)
             + (.cache_creation_input_tokens // 0)
+            + (.output_tokens // 0)
         ' 2>/dev/null |
     tail -1)
   if [ -n "$result" ] && [ "$result" -gt 0 ] 2>/dev/null; then
@@ -377,7 +388,7 @@ echo "$FIRE" >"$FIRED_FILE"
 # Build and emit message
 # ----------------------------------------------------------------------------
 if [ "$INJECT" -eq 1 ]; then
-  LEFT=$((BOUNDARY - TOKENS))
+  LEFT=$(((BOUNDARY * EFFECTIVE_PCT / 100) - TOKENS))
   [ "$LEFT" -lt 0 ] && LEFT=0
   # Round to the nearest thousand and comma-group. The message says "~", and
   # an exact figure implies a precision the token estimate doesn't have.

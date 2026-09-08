@@ -14,8 +14,8 @@ thresholds:
   climbing 254k → 370k.
 - 28% of re-fires happened with under 5k tokens of movement since the previous
   one. One session fired the same message three times at an identical 193,368.
-- Root cause: `autoCompactEnabled` is `false`, so nothing in the system could
-  bound a session. The hook was the only backstop, and volume was the only
+- Root cause: `autoCompactEnabled` was `false` (since enabled, window 300k), so
+  nothing in the system could bound a session. The hook was the only backstop, and volume was the only
   escalation it had.
 
 Two design errors underneath that. Cadence counted tool calls, which have no
@@ -24,8 +24,10 @@ hook in opposition to the work, so the only outcomes were quitting early or
 learning to ignore it. The token count it reported was already visible in the
 UI, so it told the human nothing new either.
 
-Simulating the new schedule against the same log: **561 fires → 106**, sessions
-touched 114 → 68, worst case capped at 5 by construction.
+Simulating the three-fire schedule against the same log: **561 fires → 104**,
+sessions touched 114 → 46, worst case capped at 3 by construction. Caveat: those
+historical token figures were recorded without `output_tokens`, so they undercount
+and the real fire count would be somewhat higher.
 
 ## Verified facts (don't re-guess)
 
@@ -87,22 +89,25 @@ run indefinitely. Exit 0, no output, and record the reason in the debug file.
 
 ### Fire schedule
 
-Five fires at fixed distances below the boundary B:
+Three fires at fixed distances below the boundary B:
 
 | Fire | Trigger | Level | At B=300k | At B=180k |
 |---|---|---|---|---|
-| 1 | B − 50k | L3 | 250k | 130k |
-| 2 | B − 40k | L3 | 260k | 140k |
-| 3 | B − 30k | L3 | 270k | 150k |
-| 4 | B − 20k | L3 | 280k | 160k |
-| 5 | B − 10k | L4 | 290k | 170k |
+| 1 | B − 70k | L3 | 230k | 110k |
+| 2 | B − 60k | L3 | 240k | 120k |
+| 3 | B − 50k | L4 | 250k | 130k |
+
+Retuned from five fires after the first live firing. An agent that saw fire 1
+wrote its handoff immediately, so the useful window is well before the boundary,
+not hard against it. Five fires spanning B-50k to B-10k were both too many and
+too late.
 
 Each fires once on first upward crossing. No cadence, no tool-call counting.
 Fixed distances rather than proportions: the quantity that matters is how much
 room is left to write a handoff in, which is an absolute amount of work.
 
 Past B, silent. Compaction is imminent by definition and the model has been
-told five times.
+told three times.
 
 After a compaction the token count drops, crossings re-arm, and the schedule
 runs again. This is deliberate: the model genuinely has room again.
@@ -112,27 +117,43 @@ runs again. This is deliberate: the model genuinely has room again.
 Every message carries a live countdown, is idempotent, and ends in *keep
 working*. Placeholder `%LEFT%` substitutes remaining tokens to the boundary.
 
-L3 (fires 1–4):
+L3 (fires 1 and 2):
 
 > NOTE: ~%LEFT% tokens until auto-compaction. Consider creating or refreshing
 > a handoff with task state, decisions, and next steps. Keep working.
 
-L4 (fire 5):
+L4 (fire 3):
 
 > WARNING: ~%LEFT% tokens until auto-compaction. Write or update your handoff
 > now. Keep working through the boundary. Stopping short strands the session.
 
-L3 suggests, L4 instructs. Four suggestions that escalate to one instruction
-reads as a countdown; five instructions read as nagging, which is what the old
+L3 suggests, L4 instructs. Two suggestions escalating to one instruction reads
+as a countdown; repeating an instruction reads as nagging, which is what the old
 mode did wrong.
 
 "Creating or refreshing" is what makes repetition informative rather than
 repetitive: a model that already wrote one just updates it, and a handoff
-written at 250k is stale by 290k.
+written at 230k is stale by 250k.
 
 Neither message says "file" or "on disk". Ollie's call: a model that is told
 to write a handoff will produce one in the usual place without being told
 where that is.
+
+### Measurement corrections (found in production)
+
+Two bugs, both caught on the first real firing:
+
+- **`output_tokens` was omitted** from the transcript sum. The model's own reply
+  becomes context on the next turn, so leaving it out undercounts. On one live
+  session the hook read 242,579 while Claude Code counted 284,061, a 41k gap
+  caused by a single 30k output turn. Adding it matches Claude Code exactly in
+  four of five observed compactions. The error is not constant: it spikes
+  whenever the model writes something long, which is precisely when a handoff
+  matters most.
+- **Claude Code compacts before the configured window**, needing room to run the
+  summarisation itself. Observed at 284,061 against a 300k setting, about 95%.
+  The countdown shown to the model now targets that effective boundary, so the
+  number it reads is the truth. Fire points still hang off the configured window.
 
 ## Stripped
 

@@ -89,13 +89,14 @@ run indefinitely. Exit 0, no output, and record the reason in the debug file.
 
 ### Fire schedule
 
-Three fires at fixed distances below the boundary B:
+Three fires at fixed distances below the EFFECTIVE boundary E, which is 89% of
+the configured window:
 
-| Fire | Trigger | Level | At B=300k | At B=180k |
+| Fire | Trigger | Level | Window 300k | Window 180k |
 |---|---|---|---|---|
-| 1 | B − 70k | L3 | 230k | 110k |
-| 2 | B − 60k | L3 | 240k | 120k |
-| 3 | B − 50k | L4 | 250k | 130k |
+| 1 | E − 35k | L3 | 232k | 125k |
+| 2 | E − 25k | L3 | 242k | 135k |
+| 3 | E − 15k | L4 | 252k | 145k |
 
 Retuned from five fires after the first live firing. An agent that saw fire 1
 wrote its handoff immediately, so the useful window is well before the boundary,
@@ -106,7 +107,7 @@ Each fires once on first upward crossing. No cadence, no tool-call counting.
 Fixed distances rather than proportions: the quantity that matters is how much
 room is left to write a handoff in, which is an absolute amount of work.
 
-Past B, silent. Compaction is imminent by definition and the model has been
+Past E, silent. Compaction is imminent by definition and the model has been
 told three times.
 
 After a compaction the token count drops, crossings re-arm, and the schedule
@@ -151,9 +152,12 @@ Two bugs, both caught on the first real firing:
   whenever the model writes something long, which is precisely when a handoff
   matters most.
 - **Claude Code compacts before the configured window**, needing room to run the
-  summarisation itself. Observed at 284,061 against a 300k setting, about 95%.
-  The countdown shown to the model now targets that effective boundary, so the
-  number it reads is the truth. Fire points still hang off the configured window.
+  summarisation itself, and the point varies. Two observed against a 300k
+  setting: 267,430 (89%) and 284,061 (95%). The hook takes the low end, since a
+  fire landing after compaction is worthless. Both the fire points and the
+  countdown hang off this effective boundary, so an offset states real runway.
+  Anchoring to the configured window instead made the last fire look 50k clear
+  when it was really 15k.
 
 ## Stripped
 

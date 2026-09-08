@@ -29,10 +29,12 @@ set -uo pipefail
 # instruction. Fixed rather than proportional because what matters is how much
 # room is left to write a handoff in, and that is an absolute amount of work.
 #
-# Against a 300k window these land at 230k, 240k and 250k. Tuned from live
-# behaviour: an agent that saw the first note wrote its handoff immediately, so
-# the useful window is well before the boundary, not hard up against it.
-FIRE_OFFSETS="${CC_CONTEXT_FIRE_OFFSETS:-70000 60000 50000}"
+# Offsets are measured from the EFFECTIVE boundary (see below), not the
+# configured window, so they state real runway. Against a 300k setting the
+# effective boundary is ~267k and these land at 232k, 242k and 252k. Tuned
+# from live behaviour: an agent that saw the first note wrote its handoff
+# immediately, so the useful window is well before the boundary.
+FIRE_OFFSETS="${CC_CONTEXT_FIRE_OFFSETS:-35000 25000 15000}"
 
 # Fallback boundary, used only when `autoCompactWindow` is set nowhere. The
 # real default in that case is model-specific and readable from nothing, so
@@ -50,10 +52,11 @@ FALLBACK_200K="${CC_CONTEXT_FALLBACK_200K:-180000}"
 MIN_USABLE_BOUNDARY=60000
 
 # Claude Code compacts BEFORE the configured window, needing room to run the
-# summarisation. Observed at 284,061 against a 300k setting, so ~95%. Only the
-# countdown shown to the model uses this; the fire points hang off the
-# configured window itself.
-EFFECTIVE_PCT="${CC_CONTEXT_EFFECTIVE_PCT:-95}"
+# summarisation, and the exact point varies. Two observed against a 300k
+# setting: 267,430 (89%) and 284,061 (95%). We take the LOW end, because a
+# fire that lands after compaction is worthless. Everything below hangs off
+# this effective boundary, so an offset means real runway.
+EFFECTIVE_PCT="${CC_CONTEXT_EFFECTIVE_PCT:-89}"
 
 # ----------------------------------------------------------------------------
 # Messages
@@ -356,17 +359,19 @@ fi
 # Index is recomputed from live tokens every call and persisted every call, so
 # a compaction (which drops tokens) re-arms the whole schedule on the way back
 # up. That is deliberate: after a compaction the model genuinely has room again.
+EFFECTIVE=$((BOUNDARY * EFFECTIVE_PCT / 100))
+
 FIRE=0
 IDX=0
 for OFFSET in $FIRE_OFFSETS; do
   IDX=$((IDX + 1))
-  TRIGGER=$((BOUNDARY - OFFSET))
+  TRIGGER=$((EFFECTIVE - OFFSET))
   if [ "$TOKENS" -ge "$TRIGGER" ]; then
     FIRE="$IDX"
   fi
 done
 TOTAL_FIRES="$IDX"
-if [ "$TOKENS" -ge "$BOUNDARY" ]; then
+if [ "$TOKENS" -ge "$EFFECTIVE" ]; then
   FIRE=$((TOTAL_FIRES + 1))
 fi
 
@@ -388,7 +393,7 @@ echo "$FIRE" >"$FIRED_FILE"
 # Build and emit message
 # ----------------------------------------------------------------------------
 if [ "$INJECT" -eq 1 ]; then
-  LEFT=$(((BOUNDARY * EFFECTIVE_PCT / 100) - TOKENS))
+  LEFT=$((EFFECTIVE - TOKENS))
   [ "$LEFT" -lt 0 ] && LEFT=0
   # Round to the nearest thousand and comma-group. The message says "~", and
   # an exact figure implies a precision the token estimate doesn't have.

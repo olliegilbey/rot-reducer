@@ -30,19 +30,29 @@ jq '{autoCompactEnabled, autoCompactWindow}' ~/.claude/settings.json
 
 A `PostToolUse` hook reads the session transcript after every tool call, estimates current token usage, and injects an `additionalContext` message that Claude reads on its next turn. Fires are anchored to your compaction boundary rather than to fixed token counts, so they follow the boundary wherever you set it.
 
-Three fires, at fixed distances below the boundary `B`:
+Claude Code compacts *before* the number you configure, because it needs room to
+run the summary itself, and the exact point moves. Two observed against a 300k
+window: **267,430** and **284,061**. The hook takes the low end, so the effective
+boundary `E` is 89% of your setting. A fire that lands after compaction is worth
+nothing, so it errs early.
 
-| Fire | Trigger | At `B` = 300k | At `B` = 180k | What Claude is told |
-|------|---------|---------------|---------------|---------------------|
-| 1 | `B` − 70k | 230k | 110k | Suggestion: create or refresh a handoff, keep working |
-| 2 | `B` − 60k | 240k | 120k | Same, with a smaller number |
-| 3 | `B` − 50k | 250k | 130k | Instruction: write or update the handoff now |
+Three fires, at fixed distances below `E`:
+
+| Fire | Trigger | Window 300k (`E` ≈ 267k) | Window 180k (`E` ≈ 160k) | What Claude is told |
+|------|---------|--------------------------|--------------------------|---------------------|
+| 1 | `E` − 35k | 232k | 125k | Suggestion: create or refresh a handoff, keep working |
+| 2 | `E` − 25k | 242k | 135k | Same, with a smaller number |
+| 3 | `E` − 15k | 252k | 145k | Instruction: write or update the handoff now |
+
+Offsets hang off `E` rather than the configured window so that they state real
+runway. Measured from 300k, the last fire looks 50k clear of the boundary when
+it is really 15k.
 
 Tuned from live behaviour rather than guessed. An agent that saw the first note
 wrote its handoff on the spot, so the useful window turns out to be well before
 the boundary rather than hard up against it.
 
-Each fires once, on first upward crossing. Past `B` the hook goes quiet, since compaction is imminent by definition and the message has landed five times. After a compaction the token count drops and the whole schedule re-arms, which is deliberate: the model genuinely has room again.
+Each fires once, on first upward crossing. Past `E` the hook goes quiet, since compaction is imminent by definition and the message has landed five times. After a compaction the token count drops and the whole schedule re-arms, which is deliberate: the model genuinely has room again.
 
 The first two suggest and the last one instructs. The escalation is in tone, not volume. Every message carries a live countdown, so each one tells Claude something the last did not, and every one of them ends in *keep working*.
 
@@ -102,12 +112,12 @@ All settings are environment variables read at hook invocation time. Override in
 ```bash
 # Distances below the boundary at which to fire, outermost first.
 # The last one instructs; the rest suggest. Any count works.
-export CC_CONTEXT_FIRE_OFFSETS="70000 60000 50000"
+export CC_CONTEXT_FIRE_OFFSETS="35000 25000 15000"
 
-# Claude Code compacts before the configured window, since it needs room to
-# run the summary itself. Observed at 284,061 against a 300k setting. Only
-# the countdown shown to Claude uses this; fire points ignore it.
-export CC_CONTEXT_EFFECTIVE_PCT=95
+# Effective boundary as a percentage of the configured window. Claude Code
+# compacts early and variably: 267,430 and 284,061 seen against 300k, so we
+# take the low end. Both the fire points and the countdown use this.
+export CC_CONTEXT_EFFECTIVE_PCT=89
 
 # Guessed boundary, used only when autoCompactWindow is set nowhere.
 export CC_CONTEXT_FALLBACK_1M=300000

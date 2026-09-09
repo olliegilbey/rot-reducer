@@ -56,11 +56,11 @@ echo "== boundary 300k: three fires off the ~267k effective boundary =="
 cat >"$PROJ/.claude/settings.json" <<'JSON'
 { "autoCompactEnabled": true, "autoCompactWindow": "300k" }
 JSON
-check "silent at 210k (below first trigger)" "" "$(fire s1 210000)"
-check "fire 1 at 217k" "NOTE: ~50,000 tokens until auto-compaction. Consider creating or refreshing a handoff with task state, decisions, and next steps. Keep working." "$(fire s1 217000)"
-check "no repeat at 225k (same band)" "" "$(fire s1 225000)"
-check "fire 2 at 232k" "NOTE: ~35,000 tokens until auto-compaction. Consider creating or refreshing a handoff with task state, decisions, and next steps. Keep working." "$(fire s1 232000)"
-check "fire 3 at 247k instructs" "WARNING: ~20,000 tokens until auto-compaction. Write or update your handoff now. Keep working through the boundary. Stopping short strands the session." "$(fire s1 247000)"
+check "silent at 218k (below first trigger)" "" "$(fire s1 218000)"
+check "fire 1 at 225k" "NOTE: ~42,000 tokens until auto-compaction. Consider creating or refreshing a handoff with task state, decisions, and next steps. Keep working." "$(fire s1 225000)"
+check "no repeat at 231k (same band)" "" "$(fire s1 231000)"
+check "fire 2 at 235k" "NOTE: ~32,000 tokens until auto-compaction. Consider creating or refreshing a handoff with task state, decisions, and next steps. Keep working." "$(fire s1 235000)"
+check "fire 3 at 245k instructs" "WARNING: ~22,000 tokens until auto-compaction. Write or update your handoff now. Keep working through the boundary. Stopping short strands the session." "$(fire s1 245000)"
 check "silent at 260k (all three spent)" "" "$(fire s1 260000)"
 check "silent at 267k (effective boundary)" "" "$(fire s1 267000)"
 check "silent at 284k (late compaction point)" "" "$(fire s1 284000)"
@@ -68,20 +68,20 @@ check "exactly 3 fires logged" "3" "$(grep -c 'session=s1 ' "$TMP/data/fires.log
 
 echo "== a big jump skips intermediate fires, does not stack =="
 check "jumps straight to fire 3" \
-  "WARNING: ~20,000 tokens until auto-compaction. Write or update your handoff now. Keep working through the boundary. Stopping short strands the session." \
-  "$(fire s2 247000)"
+  "WARNING: ~22,000 tokens until auto-compaction. Write or update your handoff now. Keep working through the boundary. Stopping short strands the session." \
+  "$(fire s2 245000)"
 check "only one fire logged for the jump" "1" "$(grep -c 'session=s2 ' "$TMP/data/fires.log")"
 
 echo
 echo "== compaction re-arms the schedule =="
 check "last fire before compaction" \
-  "WARNING: ~20,000 tokens until auto-compaction. Write or update your handoff now. Keep working through the boundary. Stopping short strands the session." \
-  "$(fire s3 247000)"
+  "WARNING: ~22,000 tokens until auto-compaction. Write or update your handoff now. Keep working through the boundary. Stopping short strands the session." \
+  "$(fire s3 245000)"
 check "silent past effective boundary" "" "$(fire s3 270000)"
 check "silent right after compaction drop" "" "$(fire s3 40000)"
 check "fires again on the way back up" \
-  "NOTE: ~50,000 tokens until auto-compaction. Consider creating or refreshing a handoff with task state, decisions, and next steps. Keep working." \
-  "$(fire s3 217000)"
+  "NOTE: ~42,000 tokens until auto-compaction. Consider creating or refreshing a handoff with task state, decisions, and next steps. Keep working." \
+  "$(fire s3 225000)"
 
 echo
 echo "== window value parsing =="

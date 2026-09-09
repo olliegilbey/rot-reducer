@@ -14,7 +14,7 @@
         "repo": "olliegilbey/rot-reducer"
       },
       "description": "Counts down to Claude Code's auto-compaction boundary and asks Claude to leave a handoff behind. Never tells the model to stop. Inspired by yurukusa/cc-safe-setup.",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "license": "MIT",
       "category": "monitoring",
       "tags": ["context", "monitoring", "hooks"]

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "rot-reducer",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Counts down to Claude Code's auto-compaction boundary and asks Claude to leave a handoff behind, so long sessions carry their thread across the boundary instead of rediscovering it. Never tells the model to stop. Inspired by yurukusa/cc-safe-setup.",
   "author": {
     "name": "Ollie Gilbey",

@@ -31,16 +31,19 @@ set -uo pipefail
 #
 # Offsets are measured from the EFFECTIVE boundary (see below), not the
 # configured window, so they state real runway. Against a 300k setting the
-# effective boundary is ~267k and these land at 217k, 232k and 247k.
+# effective boundary is ~267k and these land at 225k, 235k and 245k, evenly
+# spaced 10k apart. Bunched deliberately: the notes are only useful once a
+# handoff is worth writing, and spreading them wider just moves the first one
+# into territory where there is nothing to hand off yet.
 #
 # The offsets carry a deliberate margin for the turn in flight. This hook runs
 # on PostToolUse and reads completed usage entries, so the turn currently being
 # generated is invisible to it. Measured across 2,219 steps above 150k tokens:
-# median 709, p90 3,124, p99 11,981, largest observed 33,716. The 20k floor on
-# the last fire covers the p99 case. It cannot cover the worst case without
-# giving up an unreasonable amount of usable context, and a jump that large
-# still fires, just late.
-FIRE_OFFSETS="${CC_CONTEXT_FIRE_OFFSETS:-50000 35000 20000}"
+# median 709, p90 3,124, p99 11,981, largest observed 33,716. The 22k on the
+# last fire covers the p99 case. It cannot cover the worst case without giving
+# up an unreasonable amount of usable context, and a jump that large still
+# fires, just late.
+FIRE_OFFSETS="${CC_CONTEXT_FIRE_OFFSETS:-42000 32000 22000}"
 
 # Fallback boundary, used only when `autoCompactWindow` is set nowhere. The
 # real default in that case is model-specific and readable from nothing, so

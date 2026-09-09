@@ -94,16 +94,20 @@ the configured window:
 
 | Fire | Trigger | Level | Window 300k | Window 180k |
 |---|---|---|---|---|
-| 1 | E − 50k | L3 | 217k | 110k |
-| 2 | E − 35k | L3 | 232k | 125k |
-| 3 | E − 20k | L4 | 247k | 140k |
+| 1 | E − 42k | L3 | 225k | 118k |
+| 2 | E − 32k | L3 | 235k | 128k |
+| 3 | E − 22k | L4 | 245k | 138k |
 
 Retuned from five fires after the first live firing. An agent that saw fire 1
 wrote its handoff immediately, so the useful window is well before the boundary,
 not hard against it. Five fires spanning B-50k to B-10k were both too many and
 too late.
 
-Widened again once the lag in the hook's own measurement was quantified. The
+Widened once the lag in the hook's own measurement was quantified, then pulled
+back in and evenly spaced at 10k. The wide 50k/35k/20k spread put the first note
+too early to be actionable; a note only helps once there is a handoff worth
+writing. The binding constraint is the last fire, which must clear the p99 lag,
+and 22k does. The
 hook runs on PostToolUse and sums usage entries that are already written, so the
 turn being generated is invisible to it. Across 2,219 steps above 150k tokens:
 median 709, p90 3,124, p99 11,981, max 33,716. The offsets absorb this rather

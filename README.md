@@ -41,20 +41,24 @@ Three fires, at fixed distances below `E`:
 
 | Fire | Trigger | Window 300k (`E` ≈ 267k) | Window 180k (`E` ≈ 160k) | What Claude is told |
 |------|---------|--------------------------|--------------------------|---------------------|
-| 1 | `E` − 50k | 217k | 110k | Suggestion: create or refresh a handoff, keep working |
-| 2 | `E` − 35k | 232k | 125k | Same, with a smaller number |
-| 3 | `E` − 20k | 247k | 140k | Instruction: write or update the handoff now |
+| 1 | `E` − 42k | 225k | 118k | Suggestion: create or refresh a handoff, keep working |
+| 2 | `E` − 32k | 235k | 128k | Same, with a smaller number |
+| 3 | `E` − 22k | 245k | 138k | Instruction: write or update the handoff now |
+
+Ten thousand tokens apart, deliberately bunched near the end. A note only helps
+once there is something worth handing off, so spreading the first one earlier
+buys nothing.
 
 Offsets hang off `E` rather than the configured window so that they state real
-runway. Measured from 300k, the last fire looks 53k clear of the boundary when
-it is really 20k.
+runway. Measured from 300k, the last fire looks 55k clear of the boundary when
+it is really 22k.
 
 The offsets also carry a margin for the turn in flight. The hook reads usage
 entries that are already written, so the turn being generated right now is
 invisible to it and the count always trails reality a little. Across 2,219
 measured steps above 150k tokens the trail is under 709 tokens half the time,
 but one step in a hundred exceeds 11,981 and the largest seen was 33,716. The
-20k on the last fire covers the one-in-a-hundred case. Covering the worst case
+22k on the last fire covers the one-in-a-hundred case. Covering the worst case
 would cost more usable context than it is worth, and an oversized jump still
 fires, just later than the message claims.
 

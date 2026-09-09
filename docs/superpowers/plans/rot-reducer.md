@@ -94,14 +94,22 @@ the configured window:
 
 | Fire | Trigger | Level | Window 300k | Window 180k |
 |---|---|---|---|---|
-| 1 | E − 35k | L3 | 232k | 125k |
-| 2 | E − 25k | L3 | 242k | 135k |
-| 3 | E − 15k | L4 | 252k | 145k |
+| 1 | E − 50k | L3 | 217k | 110k |
+| 2 | E − 35k | L3 | 232k | 125k |
+| 3 | E − 20k | L4 | 247k | 140k |
 
 Retuned from five fires after the first live firing. An agent that saw fire 1
 wrote its handoff immediately, so the useful window is well before the boundary,
 not hard against it. Five fires spanning B-50k to B-10k were both too many and
 too late.
+
+Widened again once the lag in the hook's own measurement was quantified. The
+hook runs on PostToolUse and sums usage entries that are already written, so the
+turn being generated is invisible to it. Across 2,219 steps above 150k tokens:
+median 709, p90 3,124, p99 11,981, max 33,716. The offsets absorb this rather
+than trying to estimate it. Estimating was tried and rejected: the ratio between
+uncounted transcript bytes and the real token step ranged from 0.79 to 7.06,
+because thinking and cache accounting are not proportional to visible text.
 
 Each fires once on first upward crossing. No cadence, no tool-call counting.
 Fixed distances rather than proportions: the quantity that matters is how much

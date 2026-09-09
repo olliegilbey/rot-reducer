@@ -31,10 +31,16 @@ set -uo pipefail
 #
 # Offsets are measured from the EFFECTIVE boundary (see below), not the
 # configured window, so they state real runway. Against a 300k setting the
-# effective boundary is ~267k and these land at 232k, 242k and 252k. Tuned
-# from live behaviour: an agent that saw the first note wrote its handoff
-# immediately, so the useful window is well before the boundary.
-FIRE_OFFSETS="${CC_CONTEXT_FIRE_OFFSETS:-35000 25000 15000}"
+# effective boundary is ~267k and these land at 217k, 232k and 247k.
+#
+# The offsets carry a deliberate margin for the turn in flight. This hook runs
+# on PostToolUse and reads completed usage entries, so the turn currently being
+# generated is invisible to it. Measured across 2,219 steps above 150k tokens:
+# median 709, p90 3,124, p99 11,981, largest observed 33,716. The 20k floor on
+# the last fire covers the p99 case. It cannot cover the worst case without
+# giving up an unreasonable amount of usable context, and a jump that large
+# still fires, just late.
+FIRE_OFFSETS="${CC_CONTEXT_FIRE_OFFSETS:-50000 35000 20000}"
 
 # Fallback boundary, used only when `autoCompactWindow` is set nowhere. The
 # real default in that case is model-specific and readable from nothing, so
@@ -52,16 +58,17 @@ FALLBACK_200K="${CC_CONTEXT_FALLBACK_200K:-180000}"
 MIN_USABLE_BOUNDARY=60000
 
 # Claude Code compacts BEFORE the configured window, needing room to run the
-# summarisation, and the exact point varies. Two observed against a 300k
-# setting: 267,430 (89%) and 284,061 (95%). We take the LOW end, because a
-# fire that lands after compaction is worthless. Everything below hangs off
-# this effective boundary, so an offset means real runway.
+# summarisation, and the exact point varies. Ten automatic compactions observed
+# against a 300k setting land between 267,419 and 271,573 (89.1% to 90.5%),
+# with one late outlier at 284,061 (95%). We take the LOW end, because a fire
+# that lands after compaction is worthless. Everything below hangs off this
+# effective boundary, so an offset means real runway.
 EFFECTIVE_PCT="${CC_CONTEXT_EFFECTIVE_PCT:-89}"
 
 # ----------------------------------------------------------------------------
 # Messages
 # ----------------------------------------------------------------------------
-# Fires 1-4 suggest; fire 5 instructs. The escalation is in tone, not volume.
+# Fires 1-2 suggest; fire 3 instructs. The escalation is in tone, not volume.
 #
 # Placeholder: the literal token `%LEFT%` is substituted at emit time with the
 # tokens remaining until the boundary, rounded to the nearest thousand and

@@ -31,8 +31,9 @@ jq '{autoCompactEnabled, autoCompactWindow}' ~/.claude/settings.json
 A `PostToolUse` hook reads the session transcript after every tool call, estimates current token usage, and injects an `additionalContext` message that Claude reads on its next turn. Fires are anchored to your compaction boundary rather than to fixed token counts, so they follow the boundary wherever you set it.
 
 Claude Code compacts *before* the number you configure, because it needs room to
-run the summary itself, and the exact point moves. Two observed against a 300k
-window: **267,430** and **284,061**. The hook takes the low end, so the effective
+run the summary itself, and the exact point moves. Ten automatic compactions
+observed against a 300k window landed between **267,419** and **271,573**, with
+one late outlier at **284,061**. The hook takes the low end, so the effective
 boundary `E` is 89% of your setting. A fire that lands after compaction is worth
 nothing, so it errs early.
 
@@ -40,19 +41,24 @@ Three fires, at fixed distances below `E`:
 
 | Fire | Trigger | Window 300k (`E` ≈ 267k) | Window 180k (`E` ≈ 160k) | What Claude is told |
 |------|---------|--------------------------|--------------------------|---------------------|
-| 1 | `E` − 35k | 232k | 125k | Suggestion: create or refresh a handoff, keep working |
-| 2 | `E` − 25k | 242k | 135k | Same, with a smaller number |
-| 3 | `E` − 15k | 252k | 145k | Instruction: write or update the handoff now |
+| 1 | `E` − 50k | 217k | 110k | Suggestion: create or refresh a handoff, keep working |
+| 2 | `E` − 35k | 232k | 125k | Same, with a smaller number |
+| 3 | `E` − 20k | 247k | 140k | Instruction: write or update the handoff now |
 
 Offsets hang off `E` rather than the configured window so that they state real
-runway. Measured from 300k, the last fire looks 50k clear of the boundary when
-it is really 15k.
+runway. Measured from 300k, the last fire looks 53k clear of the boundary when
+it is really 20k.
 
-Tuned from live behaviour rather than guessed. An agent that saw the first note
-wrote its handoff on the spot, so the useful window turns out to be well before
-the boundary rather than hard up against it.
+The offsets also carry a margin for the turn in flight. The hook reads usage
+entries that are already written, so the turn being generated right now is
+invisible to it and the count always trails reality a little. Across 2,219
+measured steps above 150k tokens the trail is under 709 tokens half the time,
+but one step in a hundred exceeds 11,981 and the largest seen was 33,716. The
+20k on the last fire covers the one-in-a-hundred case. Covering the worst case
+would cost more usable context than it is worth, and an oversized jump still
+fires, just later than the message claims.
 
-Each fires once, on first upward crossing. Past `E` the hook goes quiet, since compaction is imminent by definition and the message has landed five times. After a compaction the token count drops and the whole schedule re-arms, which is deliberate: the model genuinely has room again.
+Each fires once, on first upward crossing. Past `E` the hook goes quiet, since compaction is imminent by definition and the message has landed three times. After a compaction the token count drops and the whole schedule re-arms, which is deliberate: the model genuinely has room again.
 
 The first two suggest and the last one instructs. The escalation is in tone, not volume. Every message carries a live countdown, so each one tells Claude something the last did not, and every one of them ends in *keep working*.
 

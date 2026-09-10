@@ -31,7 +31,7 @@ set -uo pipefail
 #
 # Offsets are measured from the EFFECTIVE boundary (see below), not the
 # configured window, so they state real runway. Against a 300k setting the
-# effective boundary is ~267k and these land at 225k, 235k and 245k, evenly
+# effective boundary is ~264k and these land at 222k, 232k and 242k, evenly
 # spaced 10k apart. Bunched deliberately: the notes are only useful once a
 # handoff is worth writing, and spreading them wider just moves the first one
 # into territory where there is nothing to hand off yet.
@@ -61,12 +61,15 @@ FALLBACK_200K="${CC_CONTEXT_FALLBACK_200K:-180000}"
 MIN_USABLE_BOUNDARY=60000
 
 # Claude Code compacts BEFORE the configured window, needing room to run the
-# summarisation, and the exact point varies. Ten automatic compactions observed
-# against a 300k setting land between 267,419 and 271,573 (89.1% to 90.5%),
-# with one late outlier at 284,061 (95%). We take the LOW end, because a fire
-# that lands after compaction is worthless. Everything below hangs off this
-# effective boundary, so an offset means real runway.
-EFFECTIVE_PCT="${CC_CONTEXT_EFFECTIVE_PCT:-89}"
+# summarisation, and the exact point varies. Seventeen automatic compactions
+# observed against a 300k setting: the lowest at 265,386 (88.46%), the median
+# around 89.3%, one late outlier at 284,061 (95%). We take the LOW end, rounded
+# down, because a fire that lands after compaction is worthless. Everything
+# below hangs off this effective boundary, so an offset means real runway.
+#
+# Was 89 until two compactions landed under it. Any future observation below
+# 88% means this needs lowering again.
+EFFECTIVE_PCT="${CC_CONTEXT_EFFECTIVE_PCT:-88}"
 
 # ----------------------------------------------------------------------------
 # Messages

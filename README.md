@@ -31,26 +31,26 @@ jq '{autoCompactEnabled, autoCompactWindow}' ~/.claude/settings.json
 A `PostToolUse` hook reads the session transcript after every tool call, estimates current token usage, and injects an `additionalContext` message that Claude reads on its next turn. Fires are anchored to your compaction boundary rather than to fixed token counts, so they follow the boundary wherever you set it.
 
 Claude Code compacts *before* the number you configure, because it needs room to
-run the summary itself, and the exact point moves. Ten automatic compactions
-observed against a 300k window landed between **267,419** and **271,573**, with
-one late outlier at **284,061**. The hook takes the low end, so the effective
-boundary `E` is 89% of your setting. A fire that lands after compaction is worth
-nothing, so it errs early.
+run the summary itself, and the exact point moves. Across seventeen automatic
+compactions on a 300k window the earliest was **265,386** and the median around
+**267,900**, with one late outlier at **284,061**. The hook takes the low end
+rounded down, so the effective boundary `E` is 88% of your setting. A fire that
+lands after compaction is worth nothing, so it errs early.
 
 Three fires, at fixed distances below `E`:
 
-| Fire | Trigger | Window 300k (`E` ≈ 267k) | Window 180k (`E` ≈ 160k) | What Claude is told |
+| Fire | Trigger | Window 300k (`E` ≈ 264k) | Window 180k (`E` ≈ 158k) | What Claude is told |
 |------|---------|--------------------------|--------------------------|---------------------|
-| 1 | `E` − 42k | 225k | 118k | Suggestion: create or refresh a handoff, keep working |
-| 2 | `E` − 32k | 235k | 128k | Same, with a smaller number |
-| 3 | `E` − 22k | 245k | 138k | Instruction: write or update the handoff now |
+| 1 | `E` − 42k | 222k | 116k | Suggestion: create or refresh a handoff, keep working |
+| 2 | `E` − 32k | 232k | 126k | Same, with a smaller number |
+| 3 | `E` − 22k | 242k | 136k | Instruction: write or update the handoff now |
 
 Ten thousand tokens apart, deliberately bunched near the end. A note only helps
 once there is something worth handing off, so spreading the first one earlier
 buys nothing.
 
 Offsets hang off `E` rather than the configured window so that they state real
-runway. Measured from 300k, the last fire looks 55k clear of the boundary when
+runway. Measured from 300k, the last fire looks 58k clear of the boundary when
 it is really 22k.
 
 The offsets also carry a margin for the turn in flight. The hook reads usage

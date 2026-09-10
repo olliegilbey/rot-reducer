@@ -89,14 +89,19 @@ run indefinitely. Exit 0, no output, and record the reason in the debug file.
 
 ### Fire schedule
 
-Three fires at fixed distances below the EFFECTIVE boundary E, which is 89% of
+Three fires at fixed distances below the EFFECTIVE boundary E, which is 88% of
 the configured window:
 
 | Fire | Trigger | Level | Window 300k | Window 180k |
 |---|---|---|---|---|
-| 1 | E − 42k | L3 | 225k | 118k |
-| 2 | E − 32k | L3 | 235k | 128k |
-| 3 | E − 22k | L4 | 245k | 138k |
+| 1 | E − 42k | L3 | 222k | 116k |
+| 2 | E − 32k | L3 | 232k | 126k |
+| 3 | E − 22k | L4 | 242k | 136k |
+
+E dropped from 89% to 88% once two of seventeen observed compactions landed
+below 267k, the lowest at 265,386 (88.46%). The offsets did not change, so the
+runway each fire promises is unchanged; the whole schedule simply moved down
+with the boundary.
 
 Retuned from five fires after the first live firing. An agent that saw fire 1
 wrote its handoff immediately, so the useful window is well before the boundary,

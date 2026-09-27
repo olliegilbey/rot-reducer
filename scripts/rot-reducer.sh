@@ -25,25 +25,24 @@ set -uo pipefail
 # Configuration (override via environment)
 # ----------------------------------------------------------------------------
 # Fires are anchored to the auto-compaction boundary B, not to absolute token
-# counts. Three of them, at fixed distances below B: two suggestions then one
-# instruction. Fixed rather than proportional because what matters is how much
-# room is left to write a handoff in, and that is an absolute amount of work.
+# counts. One fire by default, at a fixed distance below B. Fixed rather than
+# proportional because what matters is how much room is left to write a
+# handoff in, and that is an absolute amount of work. The variable takes a
+# space-separated list, outermost first, if more than one fire is wanted.
 #
 # Offsets are measured from the EFFECTIVE boundary (see below), not the
-# configured window, so they state real runway. Against a 300k setting the
-# effective boundary is ~264k and these land at 222k, 232k and 242k, evenly
-# spaced 10k apart. Bunched deliberately: the notes are only useful once a
-# handoff is worth writing, and spreading them wider just moves the first one
-# into territory where there is nothing to hand off yet.
+# configured window, so they state real runway. Against a 340k setting the
+# effective boundary is ~299k and the fire lands at ~271k. Against 300k it is
+# ~264k and the fire lands at 236k.
 #
-# The offsets carry a deliberate margin for the turn in flight. This hook runs
+# The offset carries a deliberate margin for the turn in flight. This hook runs
 # on PostToolUse and reads completed usage entries, so the turn currently being
 # generated is invisible to it. Measured across 2,219 steps above 150k tokens:
-# median 709, p90 3,124, p99 11,981, largest observed 33,716. The 22k on the
-# last fire covers the p99 case. It cannot cover the worst case without giving
-# up an unreasonable amount of usable context, and a jump that large still
-# fires, just late.
-FIRE_OFFSETS="${CC_CONTEXT_FIRE_OFFSETS:-42000 32000 22000}"
+# median 709, p90 3,124, p99 11,981, largest observed 33,716. The 28k covers
+# the p99 case and leaves room to write the handoff itself. It cannot cover the
+# worst case without giving up an unreasonable amount of usable context, and a
+# jump that large still fires, just late.
+FIRE_OFFSETS="${CC_CONTEXT_FIRE_OFFSETS:-28000}"
 
 # Fallback boundary, used only when `autoCompactWindow` is set nowhere. The
 # real default in that case is model-specific and readable from nothing, so
@@ -56,8 +55,8 @@ FIRE_OFFSETS="${CC_CONTEXT_FIRE_OFFSETS:-42000 32000 22000}"
 FALLBACK_1M="${CC_CONTEXT_FALLBACK_1M:-300000}"
 FALLBACK_200K="${CC_CONTEXT_FALLBACK_200K:-180000}"
 
-# A boundary below this is treated as unusable (the lowest offset would land
-# at or below zero) and we fall back to the defaults above.
+# A boundary below this is treated as unusable (the fire would land at or
+# below zero) and we fall back to the defaults above.
 MIN_USABLE_BOUNDARY=60000
 
 # Claude Code compacts BEFORE the configured window, needing room to run the
@@ -74,15 +73,15 @@ EFFECTIVE_PCT="${CC_CONTEXT_EFFECTIVE_PCT:-88}"
 # ----------------------------------------------------------------------------
 # Messages
 # ----------------------------------------------------------------------------
-# Fires 1-2 suggest; fire 3 instructs. The escalation is in tone, not volume.
+# Every fire sends the same message. It asks for a handoff and tells the model
+# to keep going, because a session that stops short never reaches compaction.
 #
 # Placeholder: the literal token `%LEFT%` is substituted at emit time with the
 # tokens remaining until the boundary, rounded to the nearest thousand and
-# comma-grouped. It is a plain find-and-replace — nothing else in these
-# strings is substituted.
+# comma-grouped. It is a plain find-and-replace — nothing else in the string
+# is substituted.
 #
-SUGGEST_MSG="NOTE: ~%LEFT% tokens until auto-compaction. Consider creating or refreshing a handoff with task state, decisions, and next steps. Keep working."
-INSTRUCT_MSG="WARNING: ~%LEFT% tokens until auto-compaction. Write or update your handoff now. Keep working through the boundary. Stopping short strands the session."
+HANDOFF_MSG="Auto-compaction in ~%LEFT% tokens. Keep working as you are, but write a handoff with \`/handoff\` very soon. Then carry on with the work. Stopping early stops the auto-compaction."
 
 # Tool-count fallback: assumed tokens per tool call when transcript and
 # debug log are both unavailable. Crude, and a weak fit against a hard
@@ -234,7 +233,7 @@ resolve_config() {
     fi
   fi
 
-  # Nothing set anywhere, or a value too small to hang five offsets off.
+  # Nothing set anywhere, or a value too small to hang the offsets off.
   if [ -z "$boundary" ] || [ "$boundary" -lt "$MIN_USABLE_BOUNDARY" ] 2>/dev/null; then
     if [ "${CLAUDE_CODE_DISABLE_1M_CONTEXT:-}" = "1" ]; then
       profile="200k"
@@ -366,8 +365,8 @@ fi
 # ----------------------------------------------------------------------------
 # Fire index counts how many trigger points the session has passed:
 #   0     below the first trigger
-#   1-5   at that fire's trigger point
-#   6     past the boundary itself, where we go quiet
+#   1..n  at that fire's trigger point
+#   n+1   past the boundary itself, where we go quiet
 #
 # Index is recomputed from live tokens every call and persisted every call, so
 # a compaction (which drops tokens) re-arms the whole schedule on the way back
@@ -420,20 +419,11 @@ if [ "$INJECT" -eq 1 ]; then
         print s out
     }')"
 
-  # Fires 1 to n-1 suggest; the last one instructs.
-  if [ "$FIRE" -ge "$TOTAL_FIRES" ]; then
-    MSG="$INSTRUCT_MSG"
-    LEVEL=4
-  else
-    MSG="$SUGGEST_MSG"
-    LEVEL=3
-  fi
-  MSG="${MSG//%LEFT%/$LEFT_PRETTY}"
+  MSG="${HANDOFF_MSG//%LEFT%/$LEFT_PRETTY}"
 
   # Append-only fire log, shared across every session. One line per injection.
-  # `level` is kept alongside `fire` so the historical log stays comparable.
-  printf 'ts=%s session=%s fire=%d level=%d tokens=%d left=%d boundary=%d origin=%s source=%s count=%d\n' \
-    "$(date '+%Y-%m-%dT%H:%M:%S')" "$SESSION_ID" "$FIRE" "$LEVEL" "$TOKENS" \
+  printf 'ts=%s session=%s fire=%d tokens=%d left=%d boundary=%d origin=%s source=%s count=%d\n' \
+    "$(date '+%Y-%m-%dT%H:%M:%S')" "$SESSION_ID" "$FIRE" "$TOKENS" \
     "$LEFT" "$BOUNDARY" "$ORIGIN" "$SOURCE" "$COUNT" \
     >>"${DATA_ROOT}/fires.log" 2>/dev/null || true
 

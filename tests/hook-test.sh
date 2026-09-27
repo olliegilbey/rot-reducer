@@ -52,36 +52,35 @@ check "debug says why" "skipped=auto-compaction-disabled" \
   "$(grep -o 'skipped=auto-compaction-disabled' "$TMP/data/s-off/last_eval")"
 
 echo
-echo "== boundary 300k: three fires off the ~264k effective boundary =="
+echo "== boundary 350k: one fire at 280k, 28k below the ~308k effective boundary =="
 cat >"$PROJ/.claude/settings.json" <<'JSON'
-{ "autoCompactEnabled": true, "autoCompactWindow": "300k" }
+{ "autoCompactEnabled": true, "autoCompactWindow": "350k" }
 JSON
-check "silent at 215k (below first trigger)" "" "$(fire s1 215000)"
-check "fire 1 at 222k" "NOTE: ~42,000 tokens until auto-compaction. Consider creating or refreshing a handoff with task state, decisions, and next steps. Keep working." "$(fire s1 222000)"
-check "no repeat at 228k (same band)" "" "$(fire s1 228000)"
-check "fire 2 at 232k" "NOTE: ~32,000 tokens until auto-compaction. Consider creating or refreshing a handoff with task state, decisions, and next steps. Keep working." "$(fire s1 232000)"
-check "fire 3 at 242k instructs" "WARNING: ~22,000 tokens until auto-compaction. Write or update your handoff now. Keep working through the boundary. Stopping short strands the session." "$(fire s1 242000)"
-check "silent at 260k (all three spent)" "" "$(fire s1 260000)"
-check "silent at 264k (effective boundary)" "" "$(fire s1 264000)"
-check "silent at 284k (late compaction point)" "" "$(fire s1 284000)"
-check "exactly 3 fires logged" "3" "$(grep -c 'session=s1 ' "$TMP/data/fires.log")"
+msg() { # left
+  printf 'Auto-compaction in ~%s tokens. Keep working as you are, but write a handoff with `/handoff` very soon. Then carry on with the work. Stopping early stops the auto-compaction.' "$1"
+}
+check "silent at 270k (below the trigger)" "" "$(fire s1 270000)"
+check "fires at 280k" "$(msg 28,000)" "$(fire s1 280000)"
+check "no repeat at 290k" "" "$(fire s1 290000)"
+check "silent at 308k (effective boundary)" "" "$(fire s1 308000)"
+check "silent at 330k (late compaction point)" "" "$(fire s1 330000)"
+check "exactly 1 fire logged" "1" "$(grep -c 'session=s1 ' "$TMP/data/fires.log")"
 
-echo "== a big jump skips intermediate fires, does not stack =="
-check "jumps straight to fire 3" \
-  "WARNING: ~22,000 tokens until auto-compaction. Write or update your handoff now. Keep working through the boundary. Stopping short strands the session." \
-  "$(fire s2 242000)"
+echo "== a big jump still fires once, with the real countdown =="
+check "jump to 300k fires" "$(msg 8,000)" "$(fire s2 300000)"
 check "only one fire logged for the jump" "1" "$(grep -c 'session=s2 ' "$TMP/data/fires.log")"
 
 echo
 echo "== compaction re-arms the schedule =="
-check "last fire before compaction" \
-  "WARNING: ~22,000 tokens until auto-compaction. Write or update your handoff now. Keep working through the boundary. Stopping short strands the session." \
-  "$(fire s3 242000)"
-check "silent past effective boundary" "" "$(fire s3 270000)"
+check "fire before compaction" "$(msg 28,000)" "$(fire s3 280000)"
+check "silent past effective boundary" "" "$(fire s3 310000)"
 check "silent right after compaction drop" "" "$(fire s3 40000)"
-check "fires again on the way back up" \
-  "NOTE: ~42,000 tokens until auto-compaction. Consider creating or refreshing a handoff with task state, decisions, and next steps. Keep working." \
-  "$(fire s3 222000)"
+check "fires again on the way back up" "$(msg 28,000)" "$(fire s3 280000)"
+
+echo
+echo "== offsets override: more than one fire =="
+check "first of two" "$(msg 40,000)" "$(CC_CONTEXT_FIRE_OFFSETS='40000 20000' fire s4 268000)"
+check "second of two" "$(msg 20,000)" "$(CC_CONTEXT_FIRE_OFFSETS='40000 20000' fire s4 288000)"
 
 echo
 echo "== window value parsing =="
@@ -112,9 +111,8 @@ check "unset window, 1m default" "300000" \
   "$(fire p9 10000 >/dev/null; grep -o 'boundary=[0-9]*' "$TMP/data/p9/last_eval" | cut -d= -f2)"
 check "unset window, 200k model default" "180000" \
   "$(CLAUDE_CODE_DISABLE_1M_CONTEXT=1 fire p10 10000 >/dev/null; grep -o 'boundary=[0-9]*' "$TMP/data/p10/last_eval" | cut -d= -f2)"
-check "200k model fires at 126k" \
-  "NOTE: ~32,000 tokens until auto-compaction. Consider creating or refreshing a handoff with task state, decisions, and next steps. Keep working." \
-  "$(CLAUDE_CODE_DISABLE_1M_CONTEXT=1 fire p11 126000)"
+check "200k model fires at 130.4k" "$(msg 28,000)" \
+  "$(CLAUDE_CODE_DISABLE_1M_CONTEXT=1 fire p11 130400)"
 
 echo
 echo "== subagents are skipped =="

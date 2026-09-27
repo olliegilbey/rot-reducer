@@ -15,10 +15,10 @@ This plugin counts down to your actual compaction point and asks for that handof
 **Auto-compaction must be on.** If it is off, no boundary exists, every message this plugin could send would describe an event that will never happen, and the hook stays completely silent by design.
 
 ```text
-/autocompact 300k
+/autocompact 340k
 ```
 
-That sets the boundary and persists it to `~/.claude/settings.json`. Also confirm compaction itself is enabled:
+That sets the window and persists it to `~/.claude/settings.json`. Claude Code compacts at about 88% of the window, so 340k compacts near 300k (see below). Also confirm compaction itself is enabled:
 
 ```bash
 jq '{autoCompactEnabled, autoCompactWindow}' ~/.claude/settings.json
@@ -37,38 +37,36 @@ compactions on a 300k window the earliest was **265,386** and the median around
 rounded down, so the effective boundary `E` is 88% of your setting. A fire that
 lands after compaction is worth nothing, so it errs early.
 
-Three fires, at fixed distances below `E`:
+One fire, at a fixed distance below `E`:
 
-| Fire | Trigger | Window 300k (`E` ≈ 264k) | Window 180k (`E` ≈ 158k) | What Claude is told |
-|------|---------|--------------------------|--------------------------|---------------------|
-| 1 | `E` − 42k | 222k | 116k | Suggestion: create or refresh a handoff, keep working |
-| 2 | `E` − 32k | 232k | 126k | Same, with a smaller number |
-| 3 | `E` − 22k | 242k | 136k | Instruction: write or update the handoff now |
+| Trigger | Window 340k (`E` ≈ 299k) | Window 300k (`E` ≈ 264k) | Window 180k (`E` ≈ 158k) |
+|---------|--------------------------|--------------------------|--------------------------|
+| `E` − 28k | 271k | 236k | 130k |
 
-Ten thousand tokens apart, deliberately bunched near the end. A note only helps
-once there is something worth handing off, so spreading the first one earlier
-buys nothing.
+Claude is told:
 
-Offsets hang off `E` rather than the configured window so that they state real
-runway. Measured from 300k, the last fire looks 58k clear of the boundary when
-it is really 22k.
+> Auto-compaction in ~28,000 tokens. Keep working as you are, but write a handoff with `/handoff` very soon. Then carry on with the work. Stopping early stops the auto-compaction.
 
-The offsets also carry a margin for the turn in flight. The hook reads usage
+The offset hangs off `E` rather than the configured window so that it states
+real runway. Measured from 340k, the fire looks 69k clear of the boundary when
+it is really 28k.
+
+The offset also carries a margin for the turn in flight. The hook reads usage
 entries that are already written, so the turn being generated right now is
 invisible to it and the count always trails reality a little. Across 2,219
 measured steps above 150k tokens the trail is under 709 tokens half the time,
 but one step in a hundred exceeds 11,981 and the largest seen was 33,716. The
-22k on the last fire covers the one-in-a-hundred case. Covering the worst case
-would cost more usable context than it is worth, and an oversized jump still
-fires, just later than the message claims.
+28k covers the one-in-a-hundred case and leaves room to write the handoff.
+Covering the worst case would cost more usable context than it is worth, and an
+oversized jump still fires, just later than the message claims.
 
-Each fires once, on first upward crossing. Past `E` the hook goes quiet, since compaction is imminent by definition and the message has landed three times. After a compaction the token count drops and the whole schedule re-arms, which is deliberate: the model genuinely has room again.
+It fires once, on first upward crossing. Past `E` the hook goes quiet, since compaction is imminent by definition. After a compaction the token count drops and the fire re-arms, which is deliberate: the model genuinely has room again.
 
-The first two suggest and the last one instructs. The escalation is in tone, not volume. Every message carries a live countdown, so each one tells Claude something the last did not, and every one of them ends in *keep working*.
+The message asks for the handoff and then says to keep working. That order matters. A session that stops to wait for a human never reaches the boundary, so it gets neither the compaction nor the work.
 
-Distances are fixed rather than proportional because what matters is how much room is left to write a handoff in, and that is an absolute amount of work, not a fraction of a window.
+The distance is fixed rather than proportional because what matters is how much room is left to write a handoff in, and that is an absolute amount of work, not a fraction of a window.
 
-The two message strings live in one block at the top of `scripts/rot-reducer.sh` (`SUGGEST_MSG` and `INSTRUCT_MSG`) and are meant to be edited to taste. `%LEFT%` is substituted with the tokens remaining, rounded to the nearest thousand.
+The message string lives at the top of `scripts/rot-reducer.sh` (`HANDOFF_MSG`) and is meant to be edited to taste. `%LEFT%` is substituted with the tokens remaining, rounded to the nearest thousand.
 
 ## Finding your boundary
 
@@ -121,13 +119,13 @@ All settings are environment variables read at hook invocation time. Override in
 
 ```bash
 # Distances below the boundary at which to fire, outermost first.
-# The last one instructs; the rest suggest. Any count works.
-export CC_CONTEXT_FIRE_OFFSETS="35000 25000 15000"
+# Default is one fire. Any count works; every fire sends the same message.
+export CC_CONTEXT_FIRE_OFFSETS="28000"
 
 # Effective boundary as a percentage of the configured window. Claude Code
-# compacts early and variably: 267,430 and 284,061 seen against 300k, so we
+# compacts early and variably: 265,386 and 284,061 seen against 300k, so we
 # take the low end. Both the fire points and the countdown use this.
-export CC_CONTEXT_EFFECTIVE_PCT=89
+export CC_CONTEXT_EFFECTIVE_PCT=88
 
 # Guessed boundary, used only when autoCompactWindow is set nowhere.
 export CC_CONTEXT_FALLBACK_1M=300000
@@ -157,7 +155,7 @@ Per-invocation source, token count, resolved boundary, and fire index are writte
 Every injection appends one line to `${CLAUDE_PLUGIN_DATA}/fires.log`, shared across all sessions:
 
 ```text
-ts=2026-09-07T17:51:42 session=abc123 fire=2 level=3 tokens=260400 left=39600 boundary=300000 origin=settings source=transcript count=61
+ts=2026-09-07T17:51:42 session=abc123 fire=1 tokens=280400 left=27600 boundary=350000 origin=settings source=transcript count=61
 ```
 
 `origin` records where the boundary came from (`settings`, `env`, or `fallback-1m`), which is the first thing to check when fires land in the wrong place. Lines beginning with `#` are operator notes and are ignored by the tallies below.
@@ -176,7 +174,7 @@ grep -v '^#' "$LOG" | sed 's/.*session=\([^ ]*\).*/\1/' | sort | uniq -c \
   | awk '{n++; t+=$1} END {printf "%.1f across %d sessions\n", t/n, n}'
 ```
 
-The log grows by at most three lines per session. Delete it any time; it's diagnostic only and nothing reads it back.
+The log grows by one line per session, plus one per compaction. Delete it any time; it's diagnostic only and nothing reads it back.
 
 ## Verifying it works
 
@@ -184,7 +182,7 @@ The log grows by at most three lines per session. Delete it any time; it's diagn
 - `skipped=auto-compaction-disabled` in that file means exactly what it says. Turn compaction on; nothing else will happen until you do.
 - Check `boundary=` and `origin=` in the same line to confirm the window resolved the way you expect.
 - `source=estimate` means the transcript wasn't readable. Check permissions on `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`.
-- In a long session you should see one fire per trigger point, three in total, then silence. After a compaction the schedule re-arms.
+- In a long session you should see one fire, then silence. After a compaction it re-arms.
 - `fires.log` is the durable record. `last_eval` only holds the most recent evaluation and is overwritten constantly.
 
 ## Tests
@@ -193,7 +191,7 @@ The log grows by at most three lines per session. Delete it any time; it's diagn
 bash tests/hook-test.sh
 ```
 
-Drives the hook with synthetic input across a temporary settings tree: the fire schedule, big jumps, re-arming after compaction, every window value format, settings precedence, the disabled case, and the subagent skip.
+Drives the hook with synthetic input across a temporary settings tree: the fire point, big jumps, multi-fire overrides, re-arming after compaction, every window value format, settings precedence, the disabled case, and the subagent skip.
 
 ## Credits
 
